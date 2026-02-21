@@ -123,6 +123,28 @@ function App() {
     saveCurrentState();
   }, [saveCurrentState]);
 
+  const toggleSubtitles = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      settings: {
+        ...s.settings,
+        subtitles: { ...s.settings.subtitles, enabled: !s.settings.subtitles?.enabled },
+      },
+    }));
+    saveCurrentState();
+  }, [saveCurrentState]);
+
+  const setSubtitleFontSize = useCallback((size: number) => {
+    setState((s) => ({
+      ...s,
+      settings: {
+        ...s.settings,
+        subtitles: { ...s.settings.subtitles, fontSize: size },
+      },
+    }));
+    saveCurrentState();
+  }, [saveCurrentState]);
+
   // Save on beforeunload
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -132,16 +154,30 @@ function App() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [saveCurrentState]);
 
-  // Show toggle button on mouse move, auto-hide after 5 seconds
+  // Show sidebar when mouse is near the left edge
   useEffect(() => {
     let timeout: number | undefined;
 
-    const handleMouseMove = () => {
-      setShowToggle(true);
-      if (timeout) clearTimeout(timeout);
-      timeout = window.setTimeout(() => {
-        setShowToggle(false);
-      }, 5000);
+    const handleMouseMove = (e: MouseEvent) => {
+      const isNearLeftEdge = e.clientX < 80;
+      
+      if (isNearLeftEdge) {
+        setShowToggle(true);
+        setSidebarCollapsed(false);
+        if (timeout) clearTimeout(timeout);
+        timeout = window.setTimeout(() => {
+          setShowToggle(false);
+        }, 3000);
+      } else {
+        // Only hide if sidebar is open and mouse is not interacting with it
+        if (!sidebarCollapsed) {
+          if (timeout) clearTimeout(timeout);
+          timeout = window.setTimeout(() => {
+            setSidebarCollapsed(true);
+            setShowToggle(false);
+          }, 2000);
+        }
+      }
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -149,15 +185,7 @@ function App() {
       window.removeEventListener('mousemove', handleMouseMove);
       if (timeout) clearTimeout(timeout);
     };
-  }, []);
-
-  // Auto-hide sidebar after 5 seconds
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      setSidebarCollapsed(true);
-    }, 5000);
-    return () => clearTimeout(timeout);
-  }, []);
+  }, [sidebarCollapsed]);
 
   // ── Other actions ──
 
@@ -258,8 +286,10 @@ function App() {
     setSpeed,
     toggleShuffle,
     toggleLoop,
+    toggleSubtitles,
+    setSubtitleFontSize,
     reset,
-  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, toggleShuffle, toggleLoop, reset]);
+  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, reset]);
 
   // ── Folder ready handler: read saved state ──
 
@@ -351,23 +381,16 @@ function App() {
           shrink-0 bg-zinc-900 border-r border-zinc-800 flex flex-col transition-all duration-200
         `}>
           {/* Folder header */}
-          <div className="px-3 py-3 border-b border-zinc-800 flex items-center justify-between gap-2">
-            <div className="truncate">
-              <p className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Folder</p>
-              <p className="text-sm text-zinc-200 truncate">{state.dirHandle.name}</p>
-            </div>
+          <div className="px-3 py-3 border-b border-zinc-800">
             <button
               onClick={handleChangeFolder}
-              className="shrink-0 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
-              title="Change folder"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white rounded-lg transition-colors cursor-pointer"
             >
-              ✕
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.06-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+              </svg>
+              Open new folder
             </button>
-          </div>
-
-          {/* File count */}
-          <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-800/50">
-            {state.playlist.length} file{state.playlist.length !== 1 ? 's' : ''} found
           </div>
 
           {/* Playlist */}
@@ -381,9 +404,8 @@ function App() {
         {/* Collapse toggle */}
         <button
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className={`absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1.5 bg-zinc-800/90 border border-zinc-700 rounded-r-md hover:bg-zinc-700 transition-all duration-200 cursor-pointer ${
-            showToggle ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
-          }`}
+          className={`absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1.5 bg-zinc-800/90 border border-zinc-700 rounded-r-md hover:bg-zinc-700 transition-all duration-200 cursor-pointer ${showToggle ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
+            }`}
           style={{ left: sidebarCollapsed ? 0 : 288 }}
           title={sidebarCollapsed ? 'Show playlist' : 'Hide playlist'}
         >

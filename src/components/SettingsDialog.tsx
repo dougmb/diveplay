@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { FileTypePreferences } from '../types';
-import { ALL_VIDEO_EXTENSIONS, ALL_AUDIO_EXTENSIONS } from '../services/fileSystem';
+import { ALL_VIDEO_EXTENSIONS, ALL_AUDIO_EXTENSIONS, ALL_SUBTITLE_EXTENSIONS } from '../services/fileSystem';
 
 interface SettingsDialogProps {
     prefs: FileTypePreferences;
@@ -13,6 +13,7 @@ interface SettingsDialogProps {
 export default function SettingsDialog({ prefs, onSave, onClose }: SettingsDialogProps) {
     const [video, setVideo] = useState<string[]>(prefs.video);
     const [audio, setAudio] = useState<string[]>(prefs.audio);
+    const [subtitles, setSubtitles] = useState<string[]>(prefs.subtitles);
 
     const toggleExtension = (ext: string, current: string[], setFn: (v: string[]) => void) => {
         if (current.includes(ext)) {
@@ -23,7 +24,7 @@ export default function SettingsDialog({ prefs, onSave, onClose }: SettingsDialo
     };
 
     const handleSave = () => {
-        onSave({ video, audio });
+        onSave({ video, audio, subtitles });
         onClose();
     };
 
@@ -68,6 +69,26 @@ export default function SettingsDialog({ prefs, onSave, onClose }: SettingsDialo
                                     onClick={() => toggleExtension(ext, audio, setAudio)}
                                     className={`px-2 py-1 text-xs rounded transition-colors cursor-pointer ${
                                         audio.includes(ext)
+                                            ? 'bg-indigo-600 text-white'
+                                            : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+                                    }`}
+                                >
+                                    {ext}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* Subtitle extensions */}
+                    <div>
+                        <h3 className="text-sm font-medium text-zinc-300 mb-2">Subtitles</h3>
+                        <div className="flex flex-wrap gap-2">
+                            {ALL_SUBTITLE_EXTENSIONS.map(ext => (
+                                <button
+                                    key={ext}
+                                    onClick={() => toggleExtension(ext, subtitles, setSubtitles)}
+                                    className={`px-2 py-1 text-xs rounded transition-colors cursor-pointer ${
+                                        subtitles.includes(ext)
                                             ? 'bg-indigo-600 text-white'
                                             : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
                                     }`}

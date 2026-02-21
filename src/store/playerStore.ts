@@ -32,6 +32,8 @@ export interface PlayerStoreActions {
     setSpeed: (rate: number) => void;
     toggleShuffle: () => void;
     toggleLoop: () => void;
+    toggleSubtitles: () => void;
+    setSubtitleFontSize: (size: number) => void;
     reset: () => void;
 }
 
@@ -40,6 +42,10 @@ export const defaultSettings: Settings = {
     playbackRate: 1.0,
     shuffle: false,
     loop: false,
+    subtitles: {
+        enabled: true,
+        fontSize: 18,
+    },
 };
 
 export const initialState: PlayerStoreState = {

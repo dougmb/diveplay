@@ -10,6 +10,7 @@ export default function Player() {
     const [isMuted, setIsMuted] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showControls, setShowControls] = useState(true);
+    const [subtitleTracks, setSubtitleTracks] = useState<Array<{ name: string; url: string }>>([]);
     const hideTimerRef = useRef<number | undefined>(undefined);
     const containerRef = useRef<HTMLDivElement>(null);
     const progressRef = useRef<HTMLDivElement>(null);
@@ -22,6 +23,7 @@ export default function Player() {
 
         if (!currentFile) {
             setBlobUrl(null);
+            setSubtitleTracks([]);
             return;
         }
 
@@ -30,6 +32,20 @@ export default function Player() {
                 const file = await currentFile.handle.getFile();
                 const url = URL.createObjectURL(file);
                 if (!cancelled) setBlobUrl(url);
+
+                // Load subtitles
+                const tracks: Array<{ name: string; url: string }> = [];
+                if (currentFile.subtitleHandles && currentFile.subtitleHandles.length > 0) {
+                    for (const subtitleHandle of currentFile.subtitleHandles) {
+                        const subtitleFile = await subtitleHandle.getFile();
+                        const subtitleUrl = URL.createObjectURL(subtitleFile);
+                        tracks.push({
+                            name: subtitleHandle.name,
+                            url: subtitleUrl,
+                        });
+                    }
+                }
+                if (!cancelled) setSubtitleTracks(tracks);
             } catch (err) {
                 console.error('Failed to load file:', err);
             }
@@ -41,6 +57,10 @@ export default function Player() {
                 if (prev) URL.revokeObjectURL(prev);
                 return null;
             });
+            setSubtitleTracks((prev) => {
+                prev.forEach(t => URL.revokeObjectURL(t.url));
+                return [];
+            });
         };
     }, [currentFile]);
 
@@ -48,13 +68,16 @@ export default function Player() {
     useEffect(() => {
         const el = mediaRef.current;
         if (!el || !blobUrl) return;
-
         if (isPlaying) {
-            el.play().catch(() => { /* autoplay blocked is ok */ });
+            el.play().catch(() => {
+                // ✅ Se o browser bloqueou, volta o estado para paused
+                player.setIsPlaying(false);
+            });
         } else {
             el.pause();
         }
     }, [isPlaying, blobUrl]);
+
 
     // Sync volume & playback rate
     useEffect(() => {
@@ -72,8 +95,12 @@ export default function Player() {
         // Check if position was set externally (different from current position)
         if (position > 0 && Math.abs(el.currentTime - position) > 1) {
             el.currentTime = position;
+            // Play after setting position (for resume functionality)
+            if (isPlaying) {
+                el.play().catch(() => { /* autoplay blocked is ok */ });
+            }
         }
-    }, [position, blobUrl]);
+    }, [position, blobUrl, isPlaying]);
 
     // Auto-hide controls on mouse inactivity
     const resetHideTimer = useCallback(() => {
@@ -157,10 +184,22 @@ export default function Player() {
     const handleLoadedMetadata = () => {
         const el = mediaRef.current;
         if (!el) return;
+
         player.setDuration(el.duration);
         el.volume = settings.volume;
         el.playbackRate = settings.playbackRate;
+
+        if (position > 0) {
+            el.currentTime = position;
+        }
+
+        if (isPlaying) {
+            el.play().catch(() => {
+                player.setIsPlaying(false);
+            });
+        }
     };
+
 
     const handleEnded = () => {
         player.setIsPlaying(false);
@@ -231,13 +270,26 @@ export default function Player() {
                         onEnded={handleEnded}
                         onPlay={() => player.setIsPlaying(true)}
                         onPause={() => player.setIsPlaying(false)}
-                    />
+                    >
+                        {subtitleTracks.map((track, index) => (
+                            <track
+                                key={index}
+                                kind="subtitles"
+                                src={track.url}
+                                srcLang="en"
+                                label={track.name}
+                                default={index === 0}
+                            />
+                        ))}
+                    </video>
                 ) : (
                     <>
                         {/* Audio visualizer placeholder */}
                         <div className="flex flex-col items-center gap-4 text-zinc-400">
                             <div className="w-32 h-32 rounded-2xl bg-zinc-800 flex items-center justify-center shadow-xl">
-                                <span className="text-6xl">🎵</span>
+                                <svg className="w-16 h-16 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 9l10.5-3m0 6.553v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 11-.99-3.479l.653-.315a2.25 2.25 0 001.632-2.163zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 01-1.632 2.163l-1.32.377a1.803 1.803 0 01-.99-3.479l.653-.315a2.25 2.25 0 001.632-2.163z" />
+                                </svg>
                             </div>
                             <p className="text-lg font-medium text-zinc-300">{currentFile.name}</p>
                             <p className="text-sm text-zinc-500">{currentFile.relativePath}</p>
@@ -276,8 +328,16 @@ export default function Player() {
                     </div>
                 </div>
 
+                {/* All controls in one row */}
                 <div className="flex items-center justify-between gap-3">
-                    {/* Left controls */}
+                    {/* Left side - Time */}
+                    <div className="flex items-center">
+                        <span className="text-xs text-zinc-400 font-mono tabular-nums">
+                            {formatTime(player.position)} / {formatTime(duration)}
+                        </span>
+                    </div>
+
+                    {/* Center - Play controls */}
                     <div className="flex items-center gap-2">
                         {/* Prev */}
                         <button onClick={() => player.prev()} className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer" title="Previous">
@@ -309,15 +369,10 @@ export default function Player() {
                                 <path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z" />
                             </svg>
                         </button>
-
-                        {/* Time */}
-                        <span className="text-xs text-zinc-400 ml-2 font-mono tabular-nums">
-                            {formatTime(player.position)} / {formatTime(duration)}
-                        </span>
                     </div>
 
-                    {/* Right controls */}
-                    <div className="flex items-center gap-2">
+                    {/* Right side - Secondary controls */}
+                    <div className="flex items-center gap-1">
                         {/* Speed */}
                         <button
                             onClick={cycleSpeed}
