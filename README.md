@@ -1,7 +1,9 @@
 # DivePlay
 
 A browser-based media player that lives in your folders and works with your local files.
-One single HTML file. Put it anywhere and it will work.
+One single HTML file. Put it anywhere.
+
+- Needing to add some codecs
 
 ## Download
 
