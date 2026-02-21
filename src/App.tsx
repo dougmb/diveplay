@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import FolderPicker from './components/FolderPicker';
+import FallbackPicker from './components/FallbackPicker';
 import Playlist from './components/Playlist';
 import Player from './components/Player';
 import ResumeDialog from './components/ResumeDialog';
@@ -9,36 +10,12 @@ import { readState, writeState } from './services/fileSystem';
 import { clearHandle } from './services/db';
 import type { MediaFile, PlayerState } from './types';
 
-function isSupportedBrowser(): boolean {
+function isFullSupportBrowser(): boolean {
   return 'showDirectoryPicker' in window;
 }
 
-function BrowserNotSupported() {
-  return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center">
-      <div className="text-center max-w-md px-4">
-        <div className="w-16 h-16 mx-auto mb-4 text-red-500">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-          </svg>
-        </div>
-        <h1 className="text-xl font-semibold text-zinc-100 mb-2">Browser Not Supported</h1>
-        <p className="text-zinc-400 mb-4">
-          This app requires the File System Access API, which is only available in Chromium-based browsers like Chrome or Edge.
-        </p>
-        <p className="text-sm text-zinc-500">
-          Please open this page in Chrome or Edge to use FolderPlayer.
-        </p>
-      </div>
-    </div>
-  );
-}
-
 function App() {
-  if (!isSupportedBrowser()) {
-    return <BrowserNotSupported />;
-  }
-
+  const hasFullSupport = isFullSupportBrowser();
   const [state, setState] = useState<PlayerStoreState>(initialState);
   const [savedState, setSavedState] = useState<PlayerState | null>(null);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
@@ -47,9 +24,13 @@ function App() {
 
   // Ref to always have the latest state for beforeunload / throttled writes
   const stateRef = useRef(state);
-  stateRef.current = state;
 
   const lastSaveTimeRef = useRef(0);
+
+  // Keep ref in sync with state
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // ── State persistence: auto-save ──
 
@@ -310,14 +291,19 @@ function App() {
       if (fileExists) {
         setSavedState(saved);
         setShowResumeDialog(true);
-
-        // Restore settings immediately regardless of resume choice
-        setState((s) => ({
-          ...s,
-          settings: { ...saved.settings },
-        }));
       }
     }
+  };
+
+  // Fallback handler for browsers without File System Access API
+  const handleFallbackFiles = (mediaFiles: MediaFile[]) => {
+    setState((s) => ({
+      ...s,
+      dirHandle: null,
+      playlist: mediaFiles,
+      currentFile: null,
+      currentIndex: -1,
+    }));
   };
 
   const handleResume = () => {
@@ -360,10 +346,18 @@ function App() {
     }, 15000);
 
     return () => clearTimeout(timeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showResumeDialog]);
 
   // No folder selected — show the picker
   if (!state.dirHandle) {
+    if (!hasFullSupport) {
+      return (
+        <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center">
+          <FallbackPicker onFilesSelected={handleFallbackFiles} />
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center">
         <FolderPicker onFolderReady={handleFolderReady} />

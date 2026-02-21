@@ -21,6 +21,7 @@ export default function Player() {
     // Carrega o arquivo como blob URL quando currentFile muda
     useEffect(() => {
         let cancelled = false;
+        // Clean up when currentFile becomes null
         if (!currentFile) {
             setBlobUrl(null);
             setSubtitleTracks([]);
@@ -71,6 +72,7 @@ export default function Player() {
         } else {
             el.pause();
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isPlaying, blobUrl]);
 
     // ✅ FIX 2: Effect duplicado de auto-play removido (causava race condition)
@@ -104,7 +106,27 @@ export default function Player() {
         }, 3000);
     }, [isPlaying]);
 
-    // Keyboard shortcuts
+    // Toggle functions
+    const toggleMute = () => {
+        const el = mediaRef.current;
+        if (!el) return;
+        el.muted = !el.muted;
+        setIsMuted(!isMuted);
+    };
+
+    const toggleFullscreen = async () => {
+        const container = containerRef.current;
+        if (!container) return;
+        if (document.fullscreenElement) {
+            await document.exitFullscreen();
+            setIsFullscreen(false);
+        } else {
+            await container.requestFullscreen();
+            setIsFullscreen(true);
+        }
+    };
+
+    // Sync play/pause state
     useEffect(() => {
         const handleKey = (e: KeyboardEvent) => {
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -142,26 +164,8 @@ export default function Player() {
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [isPlaying, settings.volume]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    const toggleMute = () => {
-        const el = mediaRef.current;
-        if (!el) return;
-        el.muted = !el.muted;
-        setIsMuted(!isMuted);
-    };
-
-    const toggleFullscreen = async () => {
-        const container = containerRef.current;
-        if (!container) return;
-        if (document.fullscreenElement) {
-            await document.exitFullscreen();
-            setIsFullscreen(false);
-        } else {
-            await container.requestFullscreen();
-            setIsFullscreen(true);
-        }
-    };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isPlaying, settings.volume]);
 
     const handleTimeUpdate = () => {
         const el = mediaRef.current;

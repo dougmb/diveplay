@@ -191,7 +191,7 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
                         <a
                             href="https://github.com/dougmb"
                             target="_blank"
-                            rel="noreferrer"
+                            rel="noopener noreferrer"
                             className="text-zinc-500 hover:text-zinc-300 transition-colors"
                         >
                             @dougmb
