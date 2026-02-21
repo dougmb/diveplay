@@ -43,6 +43,7 @@ function App() {
   const [savedState, setSavedState] = useState<PlayerState | null>(null);
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showToggle, setShowToggle] = useState(true);
 
   // Ref to always have the latest state for beforeunload / throttled writes
   const stateRef = useRef(state);
@@ -130,6 +131,33 @@ function App() {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [saveCurrentState]);
+
+  // Show toggle button on mouse move, auto-hide after 5 seconds
+  useEffect(() => {
+    let timeout: number | undefined;
+
+    const handleMouseMove = () => {
+      setShowToggle(true);
+      if (timeout) clearTimeout(timeout);
+      timeout = window.setTimeout(() => {
+        setShowToggle(false);
+      }, 5000);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      if (timeout) clearTimeout(timeout);
+    };
+  }, []);
+
+  // Auto-hide sidebar after 5 seconds
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setSidebarCollapsed(true);
+    }, 5000);
+    return () => clearTimeout(timeout);
+  }, []);
 
   // ── Other actions ──
 
@@ -277,6 +305,14 @@ function App() {
     setSavedState(null);
   };
 
+  const handleSelectNewFolder = async () => {
+    await saveCurrentState();
+    await clearHandle();
+    setState(initialState);
+    setSavedState(null);
+    setShowResumeDialog(false);
+  };
+
   const handleChangeFolder = async () => {
     await saveCurrentState();
     await clearHandle();
@@ -284,6 +320,17 @@ function App() {
     setSavedState(null);
     setShowResumeDialog(false);
   };
+
+  // Auto-resume after 15 seconds
+  useEffect(() => {
+    if (!showResumeDialog) return;
+
+    const timeout = setTimeout(() => {
+      handleResume();
+    }, 15000);
+
+    return () => clearTimeout(timeout);
+  }, [showResumeDialog]);
 
   // No folder selected — show the picker
   if (!state.dirHandle) {
@@ -334,7 +381,9 @@ function App() {
         {/* Collapse toggle */}
         <button
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-zinc-800 border border-zinc-700 rounded-r-md hover:bg-zinc-700 transition-colors cursor-pointer"
+          className={`absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1.5 bg-zinc-800/90 border border-zinc-700 rounded-r-md hover:bg-zinc-700 transition-all duration-200 cursor-pointer ${
+            showToggle ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
+          }`}
           style={{ left: sidebarCollapsed ? 0 : 288 }}
           title={sidebarCollapsed ? 'Show playlist' : 'Hide playlist'}
         >
@@ -356,6 +405,7 @@ function App() {
             state={savedState}
             onResume={handleResume}
             onDismiss={handleDismissResume}
+            onSelectNewFolder={handleSelectNewFolder}
           />
         )}
       </div>

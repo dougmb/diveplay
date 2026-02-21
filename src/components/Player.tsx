@@ -14,7 +14,7 @@ export default function Player() {
     const containerRef = useRef<HTMLDivElement>(null);
     const progressRef = useRef<HTMLDivElement>(null);
 
-    const { currentFile, isPlaying, settings, duration } = player;
+    const { currentFile, isPlaying, settings, duration, position } = player;
 
     // Load file as blob URL when currentFile changes
     useEffect(() => {
@@ -63,6 +63,17 @@ export default function Player() {
         el.volume = settings.volume;
         el.playbackRate = settings.playbackRate;
     }, [settings.volume, settings.playbackRate]);
+
+    // Sync external position changes (for resume)
+    useEffect(() => {
+        const el = mediaRef.current;
+        if (!el || !blobUrl) return;
+
+        // Check if position was set externally (different from current position)
+        if (position > 0 && Math.abs(el.currentTime - position) > 1) {
+            el.currentTime = position;
+        }
+    }, [position, blobUrl]);
 
     // Auto-hide controls on mouse inactivity
     const resetHideTimer = useCallback(() => {
