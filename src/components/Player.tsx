@@ -10,6 +10,8 @@ export default function Player() {
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showControls, setShowControls] = useState(true);
     const [subtitleTracks, setSubtitleTracks] = useState<Array<{ name: string; url: string }>>([]);
+    const [hasAudioTrack, setHasAudioTrack] = useState(true);
+    const [showNoAudioAlert, setShowNoAudioAlert] = useState(false);
     const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const progressRef = useRef<HTMLDivElement | null>(null);
@@ -179,6 +181,17 @@ export default function Player() {
         player.setDuration(el.duration);
         el.volume = settings.volume;
         el.playbackRate = settings.playbackRate;
+
+        // Check if video has an audio track
+        const audioTracks = (el as HTMLMediaElement & { audioTracks?: { length: number } }).audioTracks;
+        if (audioTracks && audioTracks.length > 0) {
+            setHasAudioTrack(true);
+            setShowNoAudioAlert(false);
+        } else if (audioTracks !== undefined) {
+            setHasAudioTrack(false);
+            setShowNoAudioAlert(true);
+        }
+
         if (position > 0) {
             el.currentTime = position;
         }
@@ -230,6 +243,22 @@ export default function Player() {
     const progress = duration > 0 ? (player.position / duration) * 100 : 0;
     const isVideo = currentFile.type === 'video';
 
+    const aspectRatioClass = {
+        'auto': 'object-contain',
+        'contain': 'object-contain',
+        'cover': 'object-cover',
+        'fill': 'object-fill',
+        '16/9': 'aspect-video w-auto h-full',
+        '4/3': 'aspect-[4/3] w-auto h-full',
+    }[settings.aspectRatio] || 'object-contain';
+
+    const cycleAspectRatio = () => {
+        const ratios: Array<'auto' | 'contain' | 'cover' | 'fill' | '16/9' | '4/3'> = ['auto', 'contain', 'cover', 'fill', '16/9', '4/3'];
+        const currentIdx = ratios.indexOf(settings.aspectRatio);
+        const nextIdx = (currentIdx + 1) % ratios.length;
+        player.setAspectRatio(ratios[nextIdx]);
+    };
+
     return (
         <div
             ref={containerRef}
@@ -244,9 +273,10 @@ export default function Player() {
             >
                 {isVideo ? (
                     <video
+                        key={currentFile.handle.name}
                         ref={mediaRef as React.RefObject<HTMLVideoElement>}
                         src={blobUrl}
-                        className="max-w-full max-h-full"
+                        className={`w-full h-full ${aspectRatioClass}`}
                         onTimeUpdate={handleTimeUpdate}
                         onLoadedMetadata={handleLoadedMetadata}
                         onEnded={handleEnded}
@@ -289,6 +319,13 @@ export default function Player() {
                 className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-8 transition-opacity duration-300 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
                     }`}
             >
+                {/* No audio alert */}
+                {showNoAudioAlert && (
+                    <div className="absolute -top-12 left-0 right-0 px-4 py-2 bg-amber-900/80 text-amber-200 text-xs text-center">
+                        ⚠️ Este vídeo não possui faixa de áudio suportada pelo navegador
+                    </div>
+                )}
+
                 {/* Progress bar */}
                 <div
                     ref={progressRef}
@@ -301,70 +338,60 @@ export default function Player() {
                     />
                 </div>
 
-                {/* All controls in one row */}
-                <div className="flex items-center justify-between gap-2">
+                {/* All controls in one row - centered */}
+                <div className="flex items-center justify-center gap-3 flex-wrap">
 
-                    {/* Left side - Time */}
-                    <span className="text-xs text-zinc-400 tabular-nums min-w-[80px]">
-                        {formatTime(player.position)} / {formatTime(duration)}
-                    </span>
+                    {/* Speed */}
+                    <button
+                        onClick={cycleSpeed}
+                        className="px-2 py-1 text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer rounded hover:bg-white/10"
+                        title="Playback speed"
+                    >
+                        {settings.playbackRate}x
+                    </button>
 
-                    {/* Center - Play controls */}
-                    <div className="flex items-center gap-2">
-                        {/* Prev */}
-                        <button
-                            onClick={() => player.prev()}
-                            className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                            title="Previous"
-                        >
-                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" />
+                    {/* Prev */}
+                    <button
+                        onClick={() => player.prev()}
+                        className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        title="Previous"
+                    >
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z" />
+                        </svg>
+                    </button>
+
+                    {/* Play/Pause */}
+                    <button
+                        onClick={() => player.setIsPlaying(!isPlaying)}
+                        className="p-2 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        title={isPlaying ? 'Pause' : 'Play'}
+                    >
+                        {isPlaying ? (
+                            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
                             </svg>
-                        </button>
-
-                        {/* Play/Pause */}
-                        <button
-                            onClick={() => player.setIsPlaying(!isPlaying)}
-                            className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors cursor-pointer"
-                            title={isPlaying ? 'Pause' : 'Play'}
-                        >
-                            {isPlaying ? (
-                                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-                                </svg>
-                            ) : (
-                                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-                                    <path d="M8 5v14l11-7z" />
-                                </svg>
-                            )}
-                        </button>
-
-                        {/* Next */}
-                        <button
-                            onClick={() => player.next()}
-                            className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                            title="Next"
-                        >
-                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 4V8l-5.5 4zM16 6h2v12h-2z" />
+                        ) : (
+                            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M8 5v14l11-7z" />
                             </svg>
-                        </button>
-                    </div>
+                        )}
+                    </button>
 
-                    {/* Right side - Secondary controls */}
-                    <div className="flex items-center gap-1">
+                    {/* Next */}
+                    <button
+                        onClick={() => player.next()}
+                        className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                        title="Next"
+                    >
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M6 18l8.5-6L6 6v12zm2.5-6 5.5 4V8l-5.5 4zM16 6h2v12h-2z" />
+                        </svg>
+                    </button>
 
-                        {/* Speed */}
-                        <button
-                            onClick={cycleSpeed}
-                            className="px-2 py-1 text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer rounded hover:bg-white/10"
-                            title="Playback speed"
-                        >
-                            {settings.playbackRate}x
-                        </button>
-
-                        {/* Volume */}
-                        <div className="flex items-center gap-1 group/vol">
+                    {/* Volume */}
+                    <div className="flex items-center gap-1 group/vol">
+                        {!isVideo ? (
                             <button onClick={toggleMute} className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer">
                                 {isMuted || settings.volume === 0 ? (
                                     <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -380,6 +407,31 @@ export default function Player() {
                                     </svg>
                                 )}
                             </button>
+                        ) : !hasAudioTrack ? (
+                            <span className="p-1.5 text-zinc-500" title="No audio track">
+                                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M12 4L9.91 6.09 12 8.18V4zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9-4.73-4.73z" />
+                                </svg>
+                            </span>
+                        ) : null}
+                        {isVideo && hasAudioTrack && (
+                            <button onClick={toggleMute} className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer">
+                                {isMuted || settings.volume === 0 ? (
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z" />
+                                    </svg>
+                                ) : settings.volume < 0.5 ? (
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z" />
+                                    </svg>
+                                ) : (
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+                                    </svg>
+                                )}
+                            </button>
+                        )}
+                        {(isVideo && hasAudioTrack) && (
                             <input
                                 type="range"
                                 min={0}
@@ -392,51 +444,69 @@ export default function Player() {
                                 }}
                                 className="w-20 h-1 accent-indigo-500 cursor-pointer opacity-0 group-hover/vol:opacity-100 transition-opacity"
                             />
-                        </div>
-
-                        {/* Shuffle */}
-                        <button
-                            onClick={() => player.toggleShuffle()}
-                            className={`p-1.5 transition-colors cursor-pointer ${settings.shuffle ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
-                                }`}
-                            title="Shuffle"
-                        >
-                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z" />
-                            </svg>
-                        </button>
-
-                        {/* Loop */}
-                        <button
-                            onClick={() => player.toggleLoop()}
-                            className={`p-1.5 transition-colors cursor-pointer ${settings.loop ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
-                                }`}
-                            title="Loop playlist"
-                        >
-                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" />
-                            </svg>
-                        </button>
-
-                        {/* Fullscreen */}
-                        {isVideo && (
-                            <button
-                                onClick={toggleFullscreen}
-                                className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer"
-                                title="Fullscreen"
-                            >
-                                {isFullscreen ? (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
-                                    </svg>
-                                ) : (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
-                                    </svg>
-                                )}
-                            </button>
                         )}
                     </div>
+
+                    {/* Shuffle */}
+                    <button
+                        onClick={() => player.toggleShuffle()}
+                        className={`p-1.5 transition-colors cursor-pointer ${settings.shuffle ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
+                            }`}
+                        title="Shuffle"
+                    >
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M10.59 9.17 5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z" />
+                        </svg>
+                    </button>
+
+                    {/* Loop */}
+                    <button
+                        onClick={() => player.toggleLoop()}
+                        className={`p-1.5 transition-colors cursor-pointer ${settings.loop ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
+                            }`}
+                        title="Loop playlist"
+                    >
+                        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" />
+                        </svg>
+                    </button>
+
+                    {/* Aspect Ratio */}
+                    {isVideo && (
+                        <button
+                            onClick={cycleAspectRatio}
+                            className="px-2 py-1 text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer rounded hover:bg-white/10"
+                            title="Aspect ratio"
+                        >
+                            {settings.aspectRatio}
+                        </button>
+                    )}
+
+                    {/* Fullscreen */}
+                    {isVideo && (
+                        <button
+                            onClick={toggleFullscreen}
+                            className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer"
+                            title="Fullscreen"
+                        >
+                            {isFullscreen ? (
+                                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z" />
+                                </svg>
+                            ) : (
+                                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z" />
+                                </svg>
+                            )}
+                        </button>
+                    )}
+                </div>
+
+                {/* Time display */}
+                <div className="flex items-center justify-center mt-2">
+                    <span className="text-xs text-zinc-400 tabular-nums">
+                        {formatTime(player.position)} / {formatTime(duration)}
+                    </span>
                 </div>
 
                 {/* Now playing label */}

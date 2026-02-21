@@ -1,7 +1,7 @@
 // playerStore.ts — Global state via React Context
 
 import { createContext, useContext } from 'react';
-import type { MediaFile, Settings } from '../types';
+import type { MediaFile, Settings, AspectRatio } from '../types';
 
 export interface PlayerStoreState {
     // Playlist
@@ -30,6 +30,7 @@ export interface PlayerStoreActions {
     setDuration: (dur: number) => void;
     setVolume: (vol: number) => void;
     setSpeed: (rate: number) => void;
+    setAspectRatio: (ratio: AspectRatio) => void;
     toggleShuffle: () => void;
     toggleLoop: () => void;
     toggleSubtitles: () => void;
@@ -46,6 +47,7 @@ export const defaultSettings: Settings = {
         enabled: true,
         fontSize: 18,
     },
+    aspectRatio: 'auto',
 };
 
 export const initialState: PlayerStoreState = {

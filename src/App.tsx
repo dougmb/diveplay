@@ -8,7 +8,7 @@ import { PlayerContext, initialState } from './store/playerStore';
 import type { PlayerStoreState } from './store/playerStore';
 import { readState, writeState } from './services/fileSystem';
 import { clearHandle } from './services/db';
-import type { MediaFile, PlayerState } from './types';
+import type { MediaFile, PlayerState, AspectRatio } from './types';
 
 function isFullSupportBrowser(): boolean {
   return 'showDirectoryPicker' in window;
@@ -122,6 +122,14 @@ function App() {
         ...s.settings,
         subtitles: { ...s.settings.subtitles, fontSize: size },
       },
+    }));
+    saveCurrentState();
+  }, [saveCurrentState]);
+
+  const setAspectRatio = useCallback((ratio: AspectRatio) => {
+    setState((s) => ({
+      ...s,
+      settings: { ...s.settings, aspectRatio: ratio },
     }));
     saveCurrentState();
   }, [saveCurrentState]);
@@ -265,12 +273,13 @@ function App() {
     setDuration,
     setVolume,
     setSpeed,
+    setAspectRatio,
     toggleShuffle,
     toggleLoop,
     toggleSubtitles,
     setSubtitleFontSize,
     reset,
-  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, reset]);
+  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, setAspectRatio, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, reset]);
 
   // ── Folder ready handler: read saved state ──
 
@@ -398,9 +407,8 @@ function App() {
         {/* Collapse toggle */}
         <button
           onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          className={`absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1.5 bg-zinc-800/90 border border-zinc-700 rounded-r-md hover:bg-zinc-700 transition-all duration-200 cursor-pointer ${showToggle ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
-            }`}
-          style={{ left: sidebarCollapsed ? 0 : 288 }}
+          className={`absolute top-1/2 -translate-y-1/2 z-10 p-1.5 bg-zinc-800/90 border border-zinc-700 rounded-r-md hover:bg-zinc-700 transition-all duration-200 cursor-pointer ${showToggle ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            } ${sidebarCollapsed ? 'left-0' : 'left-72'}`}
           title={sidebarCollapsed ? 'Show playlist' : 'Hide playlist'}
         >
           <svg className="w-4 h-4 text-zinc-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>

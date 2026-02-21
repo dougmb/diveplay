@@ -11,12 +11,15 @@ export interface SubtitleSettings {
     fontSize: number;
 }
 
+export type AspectRatio = 'auto' | 'contain' | 'cover' | 'fill' | '16/9' | '4/3';
+
 export interface Settings {
     volume: number;
     playbackRate: number;
     shuffle: boolean;
     loop: boolean;
     subtitles: SubtitleSettings;
+    aspectRatio: AspectRatio;
 }
 
 export interface PlayerState {
