@@ -148,9 +148,12 @@ export async function readState(
         const file = await fileHandle.getFile();
         const text = await file.text();
         return JSON.parse(text) as PlayerState;
-    } catch {
-        // File doesn't exist or is invalid — that's fine
-        return null;
+    } catch (err) {
+        // File doesn't exist or JSON is malformed — expected, return null
+        if (err instanceof DOMException && err.name === 'NotFoundError') return null;
+        if (err instanceof SyntaxError) return null;
+        // Any other error (permission, I/O) — propagate so callers can handle it
+        throw err;
     }
 }
 
@@ -163,8 +166,12 @@ export async function writeState(
 ): Promise<void> {
     const fileHandle = await dirHandle.getFileHandle(STATE_FILE_NAME, { create: true });
     const writable = await fileHandle.createWritable();
-    await writable.write(JSON.stringify(state, null, 2));
-    await writable.close();
+    try {
+        await writable.write(JSON.stringify(state, null, 2));
+    } finally {
+        // Always close the stream — even if write() throws — to avoid a locked file
+        await writable.close();
+    }
 }
 
 function getExtension(filename: string): string | null {
