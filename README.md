@@ -3,6 +3,8 @@
 A browser-based media player that lives in your folders and works with your local files.
 One single HTML file. Put it anywhere.
 
+![DivePlay Welcome Screen](public/welcomescreen.png)
+
 > ⚠️ **Note:** Some media files may not play because they require codecs not supported natively by the browser (e.g. AC3, DTS audio, or certain video formats). See [Limitations](#limitations) below.
 
 ## Download
@@ -11,11 +13,34 @@ Get the latest release from [GitHub Releases](https://github.com/dougmb/diveplay
 
 ## Features
 
-- Play video and audio files from a local folder
-- Progress saved automatically to `.player-state.json`
-- Subtitle support (SRT, VTT, SUB)
-- Keyboard shortcuts (Space, arrows, F, M)
-- Works offline
+- 📁 **Auto-playlist** — scans the entire selected folder and builds a playlist with all media files automatically
+- 🔁 **Playback modes** — Sequential, Shuffle, or Loop All
+- ⏱️ **Resume where you left off** — progress, volume and current file are saved and restored on next open
+- 🎬 Subtitle support (SRT, VTT, SUB)
+- ⌨️ Keyboard shortcuts (Space, arrows, F, M)
+- 📴 Works fully offline — no internet required
+
+## How It Works
+
+### 📂 Folder Scan & Auto-Playlist
+
+When you open a folder, DivePlay **scans all files inside it** and automatically builds a playlist with every supported media file found. Files are listed in the sidebar and play sequentially by default.
+
+### 🔀 Playback Order
+
+You can switch the playback mode at any time using the controls in the player:
+
+| Mode | Description |
+|------|-------------|
+| **Sequential** | Plays files in alphabetical order, one after another |
+| **Shuffle** | Randomizes the playlist order |
+| **Loop All** | Repeats the entire playlist indefinitely |
+
+### ⏱️ Resume Where You Left Off
+
+DivePlay automatically saves your progress to a `.player-state.json` file inside the media folder. Next time you open the same folder, it offers to **resume from exactly where you stopped** — including the current file, timestamp, volume, and playback settings.
+
+> 💡 This feature requires Chrome or Edge (browsers that support the File System Access API).
 
 ## Supported Browsers
 
