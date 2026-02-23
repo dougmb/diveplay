@@ -17,28 +17,29 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
     const [prefs, setPrefs] = useState<FileTypePreferences>(DEFAULT_FILE_TYPES);
 
     useEffect(() => {
+        let active = true;
         (async () => {
             try {
+                // Load prefs FIRST so scanDirectory uses them (avoids stale closure)
                 const storedPrefs = await loadPreferences();
-                if (storedPrefs) {
-                    setPrefs(storedPrefs);
-                }
+                const effectivePrefs = storedPrefs ?? DEFAULT_FILE_TYPES;
+                if (storedPrefs && active) setPrefs(storedPrefs);
 
                 const storedHandle = await loadHandle();
-                if (storedHandle) {
+                if (storedHandle && active) {
                     const granted = await requestPermission(storedHandle);
-                    if (granted) {
-                        const files = await scanDirectory(storedHandle, prefs);
-                        onFolderReady(storedHandle, files);
-                        return;
+                    if (granted && active) {
+                        const files = await scanDirectory(storedHandle, effectivePrefs);
+                        if (active) onFolderReady(storedHandle, files);
                     }
                 }
             } catch {
                 // Couldn't restore — user will pick manually
             } finally {
-                setLoading(false);
+                if (active) setLoading(false);
             }
         })();
+        return () => { active = false; };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     const handlePickFolder = async () => {

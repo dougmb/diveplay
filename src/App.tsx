@@ -149,7 +149,7 @@ function App() {
 
     const handleMouseMove = (e: MouseEvent) => {
       const isNearLeftEdge = e.clientX < 80;
-      
+
       if (isNearLeftEdge) {
         setShowToggle(true);
         setSidebarCollapsed(false);
@@ -292,15 +292,19 @@ function App() {
       currentIndex: -1,
     }));
 
-    // Check for saved state
-    const saved = await readState(handle);
-    if (saved && saved.lastFile) {
-      // Verify the file still exists in the playlist
-      const fileExists = mediaFiles.some((f) => f.relativePath === saved.lastFile);
-      if (fileExists) {
-        setSavedState(saved);
-        setShowResumeDialog(true);
+    // Check for saved state — explicitly catch permission/I/O errors so they
+    // don't abort the whole folder-open flow
+    try {
+      const saved = await readState(handle);
+      if (saved && saved.lastFile) {
+        const fileExists = mediaFiles.some((f) => f.relativePath === saved.lastFile);
+        if (fileExists) {
+          setSavedState(saved);
+          setShowResumeDialog(true);
+        }
       }
+    } catch (err) {
+      console.warn('Could not read saved state:', err);
     }
   };
 
@@ -346,16 +350,16 @@ function App() {
     setShowResumeDialog(false);
   };
 
+  // Keep a stable ref to handleResume so the auto-resume timer doesn't
+  // capture a stale closure (savedState / state.playlist change after mount)
+  const handleResumeRef = useRef(handleResume);
+  useEffect(() => { handleResumeRef.current = handleResume; });
+
   // Auto-resume after 15 seconds
   useEffect(() => {
     if (!showResumeDialog) return;
-
-    const timeout = setTimeout(() => {
-      handleResume();
-    }, 15000);
-
+    const timeout = setTimeout(() => handleResumeRef.current(), 15000);
     return () => clearTimeout(timeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showResumeDialog]);
 
   // No folder selected — show the picker
