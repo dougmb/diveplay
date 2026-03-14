@@ -385,6 +385,14 @@ export default function Player() {
             onMouseMove={resetHideTimer}
             onMouseLeave={() => { if (isPlaying) setShowControls(false); }}
         >
+            {/* Top info overlay */}
+            <div className={`absolute top-0 left-0 right-0 p-6 bg-gradient-to-b from-black/60 to-transparent pointer-events-none transition-opacity duration-300 z-10 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
+                }`}>
+                <h1 className="text-sm font-medium text-zinc-100 drop-shadow-lg truncate max-w-2xl" title={currentFile.relativePath}>
+                    {currentFile.name}
+                </h1>
+            </div>
+
             {/* Media element */}
             <div
                 className="flex-1 flex items-center justify-center cursor-pointer"
@@ -470,7 +478,7 @@ export default function Player() {
                 </div>
 
                 {/* All controls in one row - centered */}
-                <div className="flex items-center justify-center gap-3 flex-wrap">
+                <div className="flex items-center justify-center gap-3">
 
                     {/* Speed */}
                     <button
@@ -578,6 +586,11 @@ export default function Player() {
                         )}
                     </div>
 
+                    {/* Time display */}
+                    <span className="text-xs text-zinc-400 tabular-nums px-1">
+                        {formatTime(player.position)} / {formatTime(duration)}
+                    </span>
+
                     {/* Shuffle */}
                     <button
                         onClick={() => player.toggleShuffle()}
@@ -632,18 +645,6 @@ export default function Player() {
                         </button>
                     )}
                 </div>
-
-                {/* Time display */}
-                <div className="flex items-center justify-center mt-2">
-                    <span className="text-xs text-zinc-400 tabular-nums">
-                        {formatTime(player.position)} / {formatTime(duration)}
-                    </span>
-                </div>
-
-                {/* Now playing label */}
-                <p className="text-xs text-zinc-500 truncate mt-2" title={currentFile.relativePath}>
-                    {currentFile.relativePath}
-                </p>
             </div>
         </div>
     );
