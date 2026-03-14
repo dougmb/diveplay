@@ -1,15 +1,12 @@
 // Player.tsx — Video/audio player with custom controls
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { usePlayer } from '../store/playerStore';
-import { ensurePlayable, mightNeedTranscoding, isHttpContext } from '../services/codecService';
+import { ensurePlayable, isHttpContext } from '../services/codecService';
 
 export default function Player() {
     const player = usePlayer();
     const mediaRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
     const [blobUrl, setBlobUrl] = useState<string | null>(null);
-    const [isTranscoding, setIsTranscoding] = useState(false);
-    const [transcodeProgress, setTranscodeProgress] = useState(0);
-    const [transcodeError, setTranscodeError] = useState<string | null>(null);
     const [isMuted, setIsMuted] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showControls, setShowControls] = useState(true);
@@ -38,18 +35,18 @@ export default function Player() {
             const isFileProtocol = !isHttpContext();
             if (isFileProtocol) {
                 setMediaError(
-                    'This file uses a codec not supported by your browser (e.g. HEVC or AC3). ' +
-                    'Automatic transcoding only works when DivePlay is opened via a web server (http://).'
+                    'This file uses a codec not supported by your browser (e.g. MKV, HEVC or AC3). ' +
+                    'The desktop version of DivePlay will support these formats natively.'
                 );
             } else {
                 setMediaError(
-                    'Failed to play this file. The format may be corrupted or unsupported.'
+                    'Failed to play this file. The format may be corrupted or unsupported by your browser.'
                 );
             }
         }
     }, []);
 
-    // Load file — transcode via ffmpeg.wasm if the codec is unsupported
+    // Load file
     useEffect(() => {
         let cancelled = false;
 
@@ -59,33 +56,17 @@ export default function Player() {
             return;
         }
 
-        setTranscodeError(null);
-        setTranscodeProgress(0);
-
         (async () => {
             try {
                 const file = await currentFile.handle.getFile();
-                const needsCheck = mightNeedTranscoding(file.name);
-
-                if (needsCheck) {
-                    if (!cancelled) setIsTranscoding(true);
-                }
-
-                const { url, transcoded } = await ensurePlayable(file, (p) => {
-                    if (!cancelled) setTranscodeProgress(p);
-                });
+                const { url } = await ensurePlayable(file);
 
                 if (cancelled) {
                     URL.revokeObjectURL(url);
                     return;
                 }
 
-                if (transcoded) {
-                    console.info('[DivePlay] Transcoded:', file.name);
-                }
-
                 setBlobUrl(url);
-                setIsTranscoding(false);
 
                 // Load subtitles — use data: URLs so Chrome doesn't block blob:null on <track>
                 const tracks: Array<{ name: string; url: string }> = [];
@@ -102,21 +83,18 @@ export default function Player() {
             } catch (err) {
                 if (!cancelled) {
                     console.error('Failed to load file:', err);
-                    setIsTranscoding(false);
-                    setTranscodeError('Failed to load file. The format may be unsupported.');
+                    setMediaError('Failed to load file. The format may be unsupported.');
                 }
             }
         })();
 
         return () => {
             cancelled = true;
-            setIsTranscoding(false);
             setBlobUrl((prev) => {
                 if (prev) URL.revokeObjectURL(prev);
                 return null;
             });
             setSubtitleTracks([]);
-            // data: URLs don't need revoking
         };
     }, [currentFile]);
 
@@ -134,8 +112,6 @@ export default function Player() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isPlaying, blobUrl]);
 
-    // ✅ FIX 2: Effect duplicado de auto-play removido (causava race condition)
-
     // Sync volume & playback rate
     useEffect(() => {
         const el = mediaRef.current;
@@ -144,14 +120,14 @@ export default function Player() {
         el.playbackRate = settings.playbackRate;
     }, [settings.volume, settings.playbackRate]);
 
-    // Sync posição externa (para resume)
+    // Sync position
     useEffect(() => {
         const el = mediaRef.current;
         if (!el || !blobUrl) return;
         if (position > 0 && Math.abs(el.currentTime - position) > 1) {
             el.currentTime = position;
             if (isPlaying) {
-                el.play().catch(() => { /* autoplay bloqueado */ });
+                el.play().catch(() => { /* autoplay blocked */ });
             }
         }
     }, [position, blobUrl, isPlaying]);
@@ -182,13 +158,11 @@ export default function Player() {
             } else {
                 await container.requestFullscreen();
             }
-            // State is synced by the fullscreenchange listener below
         } catch (err) {
             console.warn('Fullscreen toggle failed:', err);
         }
     };
 
-    // Keep isFullscreen in sync with the actual browser fullscreen state
     useEffect(() => {
         const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
         document.addEventListener('fullscreenchange', onFsChange);
@@ -269,13 +243,11 @@ export default function Player() {
         }
     };
 
-    // ✅ FIX 3: handleEnded — sempre avança; loop/shuffle tratados no store
     const handleEnded = () => {
         isEndedRef.current = true;
         player.next();
     };
 
-    // ✅ FIX 4: handlePause — ignora o pause automático do browser após ended
     const handlePause = () => {
         if (!isEndedRef.current) {
             player.setIsPlaying(false);
@@ -299,7 +271,7 @@ export default function Player() {
         player.setSpeed(speeds[nextIdx]);
     };
 
-    if (!currentFile && !isTranscoding) {
+    if (!currentFile) {
         return (
             <div className="flex items-center justify-center h-full text-zinc-500">
                 Select a file to play
@@ -307,54 +279,10 @@ export default function Player() {
         );
     }
 
-    // Transcoding overlay
-    if (isTranscoding) {
-        const fileName = currentFile?.name ?? '';
-        return (
-            <div className="flex flex-col items-center justify-center h-full gap-5 bg-black px-6">
-                <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-700 flex items-center justify-center">
-                    <svg className="w-7 h-7 text-indigo-400 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                    </svg>
-                </div>
-                <div className="flex flex-col items-center gap-1 max-w-sm w-full">
-                    <p className="text-sm font-semibold text-white">
-                        {transcodeProgress < 5 ? 'Preparing codec…' : 'Converting codec…'}
-                    </p>
-                    <p className="text-xs text-zinc-500 truncate max-w-full" title={fileName}>{fileName}</p>
-                </div>
-                <div className="w-full max-w-xs">
-                    <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
-                        <div
-                            className="h-full bg-indigo-500 rounded-full transition-all duration-500"
-                            style={{ width: `${Math.max(4, transcodeProgress)}%` }}
-                        />
-                    </div>
-                    <p className="text-xs text-zinc-600 text-center mt-1.5">{transcodeProgress}%</p>
-                </div>
-                <p className="text-xs text-zinc-600 text-center max-w-xs">
-                    Unsupported codec detected — converting via ffmpeg.wasm (requires internet on first use)
-                </p>
-            </div>
-        );
-    }
-
-    if (transcodeError) {
-        return (
-            <div className="flex flex-col items-center justify-center h-full gap-3 text-zinc-500 px-6">
-                <svg className="w-10 h-10 text-red-500/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-                </svg>
-                <p className="text-sm text-zinc-400 text-center">{transcodeError}</p>
-            </div>
-        );
-    }
-
-    if (!currentFile || !blobUrl) {
+    if (!blobUrl && !mediaError) {
         return (
             <div className="flex items-center justify-center h-full text-zinc-500">
-                Select a file to play
+                Loading...
             </div>
         );
     }
@@ -403,7 +331,7 @@ export default function Player() {
                         <video
                             key={currentFile.handle.name}
                             ref={mediaRef as React.RefObject<HTMLVideoElement>}
-                            src={blobUrl}
+                            src={blobUrl || ''}
                             className={`w-full h-full ${aspectRatioClass}`}
                             onTimeUpdate={handleTimeUpdate}
                             onLoadedMetadata={handleLoadedMetadata}
@@ -433,7 +361,6 @@ export default function Player() {
                     </>
                 ) : (
                     <>
-                        {/* Audio visualizer placeholder */}
                         <div className="flex flex-col items-center gap-3 text-zinc-400 pointer-events-none">
                             <div className="w-32 h-32 rounded-2xl bg-zinc-800 flex items-center justify-center text-5xl">🎵</div>
                             <span className="text-lg font-semibold text-white">{currentFile.name}</span>
@@ -441,7 +368,7 @@ export default function Player() {
                         </div>
                         <audio
                             ref={mediaRef as React.RefObject<HTMLAudioElement>}
-                            src={blobUrl}
+                            src={blobUrl || ''}
                             onTimeUpdate={handleTimeUpdate}
                             onLoadedMetadata={handleLoadedMetadata}
                             onEnded={handleEnded}
@@ -479,7 +406,6 @@ export default function Player() {
 
                 {/* All controls in one row - centered */}
                 <div className="flex items-center justify-center gap-3">
-
                     {/* Speed */}
                     <button
                         onClick={cycleSpeed}
@@ -661,21 +587,13 @@ function formatTime(seconds: number): string {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-/**
- * Converts subtitle content to WebVTT format.
- * - VTT passes through unchanged.
- * - SRT timestamps use commas; VTT uses dots - we fix that.
- * - Other formats (.sub) are passed through as-is.
- */
 function toVtt(content: string, filename: string): string {
     const ext = filename.split('.').pop()?.toLowerCase();
     if (ext === 'vtt') return content;
     if (ext === 'srt') {
         const normalised = content.trim().replace(/\r\n|\r/g, '\n');
-        // Replace SRT comma millisecond separator with VTT dot
         const fixed = normalised.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
         return 'WEBVTT\n\n' + fixed;
     }
-    // .sub or unknown - return as-is and let the browser decide
     return content;
 }

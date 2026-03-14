@@ -3,6 +3,11 @@
 ## 1. Objetivo
 Criar uma versão de aplicativo nativo (Windows, macOS, Linux) do DivePlay utilizando o framework **Tauri**, solucionando o problema de suporte a formatos de mídia e codecs comuns (MKV, HEVC, AC3, DTS) que os navegadores bloqueiam. Tudo isso mantendo a atual versão Web totalmente funcional e rodando a partir da mesma base de código React/Vite.
 
+### Princípios da Versão Aplicativo:
+- **Portabilidade:** Um único executável (`.exe`) sem necessidade de instalação.
+- **Segurança e Conveniência:** Não ser necessário privilégio de administrador para executar.
+- **Leveza:** Utilizar o WebView nativo para manter o binário pequeno e o consumo de RAM baixo.
+
 ## 2. Arquitetura do Projeto (Coexistência)
 O repositório funcionará como um **Monorepo lógico**, onde o Frontend é compartilhado e as capacidades do sistema variam com base no ambiente de execução.
 
