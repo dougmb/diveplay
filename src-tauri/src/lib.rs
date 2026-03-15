@@ -48,70 +48,53 @@ struct AppState {
     stream_token: String,
 }
 
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 fn get_sidecar_path(handle: &AppHandle, name: &str) -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     let ext = ".exe";
     #[cfg(not(target_os = "windows"))]
     let ext = "";
 
-    // In Tauri v2, sidecars are usually in the resources folder in production
-    // and handled automatically by the shell plugin, but here we need the path for Command::new
-    
-    // 1. Try resolving via Resource directory (standard for bundled files)
-    let resource_path = format!("binaries/{}{}", name, ext);
-    if let Ok(path) = handle.path().resolve(&resource_path, BaseDirectory::Resource) {
+    let binary_name = format!("{}{}", name, ext);
+
+    // 1. Try standard Resource directory (Tauri v2)
+    if let Ok(path) = handle.path().resolve(format!("binaries/{}", binary_name), BaseDirectory::Resource) {
         if path.exists() {
             return Ok(path);
         }
     }
 
-    // 2. Development fallbacks
-    let paths_to_check = [
-        std::env::current_dir().unwrap().join("binaries").join(format!("{}{}", name, ext)),
-        std::env::current_dir().unwrap().join("src-tauri").join("binaries").join(format!("{}{}", name, ext)),
+    // 2. Try relative to the executable (common for portable and NSIS side-by-side)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Check in ./binaries/
+            let path = exe_dir.join("binaries").join(&binary_name);
+            if path.exists() {
+                return Ok(path);
+            }
+            // Check in ./
+            let path = exe_dir.join(&binary_name);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+    }
+
+    // 3. Development fallbacks
+    let dev_paths = [
+        std::env::current_dir().unwrap_or_default().join("binaries").join(&binary_name),
+        std::env::current_dir().unwrap_or_default().join("src-tauri").join("binaries").join(&binary_name),
     ];
 
-    for path in paths_to_check {
+    for path in dev_paths {
         if path.exists() {
             return Ok(path);
         }
     }
 
-    Err(format!("Could not find binary '{}'. Checked resources/{} and dev paths.", name, resource_path))
-}
-
-#[tauri::command]
-async fn get_media_info(handle: AppHandle, path: String) -> Result<MediaInfo, String> {
-    let ffprobe_path = get_sidecar_path(&handle, "ffprobe")?;
-    
-    let mut cmd = Command::new(&ffprobe_path);
-    
-    #[cfg(windows)]
-    {
-        // On windows, we might need to handle raw paths or quoting, 
-        // but Command::arg usually handles this.
-    }
-
-    let output = cmd.args([
-            "-v", "error",
-            "-print_format", "json",
-            "-show_streams",
-            "-show_format",
-            &path // Removed -i for now to test if it's causing issues with some ffprobe versions
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run ffprobe at {:?}: {}", ffprobe_path, e))?;
-
-    if !output.status.success() {
-        let err_msg = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffprobe failed: {}", err_msg));
-    }
-
-    let info: MediaInfo = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("Failed to parse ffprobe output: {}", e))?;
-
-    Ok(info)
+    // 4. Last resort: check system PATH
+    Ok(PathBuf::from(&binary_name))
 }
 
 #[tauri::command]
@@ -122,27 +105,51 @@ async fn get_streaming_url(handle: AppHandle, path: String) -> Result<String, St
     Ok(format!("http://localhost:{}/stream/{}?token={}", *port, encoded_path, state.stream_token))
 }
 
+#[tauri::command]
+async fn get_media_info(handle: AppHandle, path: String) -> Result<MediaInfo, String> {
+    let ffprobe_path = get_sidecar_path(&handle, "ffprobe")?;
+    
+    let mut cmd = Command::new(&ffprobe_path);
+    
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+
+    let output = cmd.args([
+            "-v", "error",
+            "-print_format", "json",
+            "-show_streams",
+            "-show_format",
+            &path
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to execute ffprobe: {}", e))?;
+
+    if !output.status.success() {
+        return Err("ffprobe failed to read file".to_string());
+    }
+
+    let info: MediaInfo = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse ffprobe output: {}", e))?;
+
+    Ok(info)
+}
+
 async fn stream_file(
     State(state): State<Arc<AppState>>,
-    Path(path_str): Path<String>, // Axum already decodes the path from *path
+    Path(path_str): Path<String>,
     Query(params): Query<StreamParams>,
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
-    // 1. Token validation
     if params.token != state.stream_token {
-        eprintln!("Unauthorized access attempt with token: {}", params.token);
         return Err(StatusCode::UNAUTHORIZED);
     }
 
     let path = PathBuf::from(&path_str);
-
-    // 2. Path safety check
     if !path.exists() || !path.is_file() {
-        eprintln!("File not found or not a file: {}", path_str);
         return Err(StatusCode::NOT_FOUND);
     }
 
-    // Check if we need to transcode
     let should_transcode = params.transcode.unwrap_or(false);
     
     if should_transcode {
@@ -150,22 +157,18 @@ async fn stream_file(
         let start_time = params.ss.unwrap_or(0.0);
         
         let ffmpeg_path = get_sidecar_path(&state.handle, "ffmpeg")
-            .map_err(|e| {
-                eprintln!("Sidecar resolution error: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-        
-        println!("--- Spawning FFmpeg ---");
-        println!("Input: {}", path_str);
-        println!("Seek: {}s", start_time);
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         
         let mut cmd = Command::new(&ffmpeg_path);
         
-        // Don't use kill_on_drop for a moment to see if it changes anything
-        // cmd.kill_on_drop(true); 
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        
+        cmd.kill_on_drop(true); 
 
         cmd.arg("-y")
-           .arg("-loglevel").arg("info");
+           .arg("-hide_banner")
+           .arg("-loglevel").arg("error");
 
         if start_time > 0.0 {
             cmd.arg("-ss").arg(start_time.to_string());
@@ -189,38 +192,21 @@ async fn stream_file(
            .arg("pipe:1");
 
         cmd.stdout(Stdio::piped())
-           .stderr(Stdio::piped());
+           .stderr(Stdio::null()); // Silencing stderr for production performance
 
         let mut child = cmd.spawn()
             .map_err(|e| {
-                eprintln!("CRITICAL: Failed to spawn FFmpeg: {}", e);
+                eprintln!("Failed to spawn FFmpeg: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
         let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        
-        // Log stderr more aggressively
-        if let Some(mut stderr) = child.stderr.take() {
-            tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = stderr.read(&mut buf).await {
-                    if n == 0 { break; }
-                    let msg = String::from_utf8_lossy(&buf[..n]);
-                    eprint!("{}", msg);
-                }
-            });
-        }
-
         let stream = ReaderStream::new(stdout);
         let body = Body::from_stream(stream);
-
-        println!("Streaming started...");
 
         return Response::builder()
             .header(header::CONTENT_TYPE, "video/mp4")
             .header(header::CACHE_CONTROL, "no-cache")
-            .header(header::TRANSFER_ENCODING, "chunked")
             .body(body)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
