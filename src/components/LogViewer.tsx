@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { isTauri, getTauriAPI } from '../services/tauri';
+import { getTauriAPI } from '../services/tauri';
+import { capabilities } from '../platform/capabilities';
 
 interface LogViewerProps {
     isOpen: boolean;
@@ -11,20 +12,8 @@ export default function LogViewer({ isOpen, onClose }: LogViewerProps) {
     const [loading, setLoading] = useState(false);
     const logsEndRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        if (isOpen) {
-            loadLogs();
-            const interval = setInterval(loadLogs, 2000);
-            return () => clearInterval(interval);
-        }
-    }, [isOpen]);
-
-    useEffect(() => {
-        logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [logs]);
-
     const loadLogs = async () => {
-        if (!isTauri()) return;
+        if (!capabilities.hasNativeLogs) return;
         setLoading(true);
         try {
             const api = await getTauriAPI();
@@ -38,8 +27,21 @@ export default function LogViewer({ isOpen, onClose }: LogViewerProps) {
         setLoading(false);
     };
 
+    useEffect(() => {
+        if (isOpen) {
+            // eslint-disable-next-line react-hooks/set-state-in-effect
+            loadLogs();
+            const interval = setInterval(loadLogs, 2000);
+            return () => clearInterval(interval);
+        }
+    }, [isOpen]);
+
+    useEffect(() => {
+        logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [logs]);
+
     const clearLogs = async () => {
-        if (!isTauri()) return;
+        if (!capabilities.hasNativeLogs) return;
         try {
             const api = await getTauriAPI();
             if (api) {

@@ -2,7 +2,7 @@
  * Detects if the app is running within the Tauri environment.
  */
 export function isTauri(): boolean {
-    return !!(window as any).__TAURI_INTERNALS__ || !!(window as any).__TAURI__;
+    return !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ || !!(window as unknown as { __TAURI__?: unknown }).__TAURI__;
 }
 
 /**
