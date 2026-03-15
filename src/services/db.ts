@@ -25,7 +25,7 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 export async function saveHandle(
-    handle: FileSystemDirectoryHandle
+    handle: FileSystemDirectoryHandle | string
 ): Promise<void> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
@@ -37,7 +37,7 @@ export async function saveHandle(
     });
 }
 
-export async function loadHandle(): Promise<FileSystemDirectoryHandle | null> {
+export async function loadHandle(): Promise<FileSystemDirectoryHandle | string | null> {
     const db = await openDB();
     return new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, 'readonly');
@@ -49,8 +49,10 @@ export async function loadHandle(): Promise<FileSystemDirectoryHandle | null> {
 }
 
 export async function requestPermission(
-    handle: FileSystemDirectoryHandle
+    handle: FileSystemDirectoryHandle | string
 ): Promise<boolean> {
+    if (typeof handle === 'string') return true; // Tauri paths don't use this API
+    
     try {
         const opts = { mode: 'readwrite' as const };
 

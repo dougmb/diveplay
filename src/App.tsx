@@ -182,7 +182,7 @@ function App() {
     setState((s) => ({ ...s, playlist: files }));
   }, []);
 
-  const setDirHandle = useCallback((handle: FileSystemDirectoryHandle | null) => {
+  const setDirHandle = useCallback((handle: FileSystemDirectoryHandle | string | null) => {
     setState((s) => ({ ...s, dirHandle: handle }));
   }, []);
 
@@ -283,7 +283,7 @@ function App() {
 
   // ── Folder ready handler: read saved state ──
 
-  const handleFolderReady = async (handle: FileSystemDirectoryHandle, mediaFiles: MediaFile[]) => {
+  const handleFolderReady = async (handle: FileSystemDirectoryHandle | string, mediaFiles: MediaFile[]) => {
     setState((s) => ({
       ...s,
       dirHandle: handle,

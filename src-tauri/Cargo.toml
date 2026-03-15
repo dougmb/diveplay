@@ -1,0 +1,30 @@
+[package]
+name = "diveplay"
+version = "1.0.0"
+description = "DivePlay Media Player"
+authors = ["DouglasMB"]
+license = "GPL-2.0-only"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "diveplay_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.5", features = ["cors"] }
+mime_guess = "2.0"
+urlencoding = "2.1"
+local-ip-address = "0.6"

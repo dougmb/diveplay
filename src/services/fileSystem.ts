@@ -1,6 +1,7 @@
-// fileSystem.ts — File System Access API utilities
+// fileSystem.ts — Abstraction for File System Access (Web & Tauri)
 
 import type { MediaFile, PlayerState, FileTypePreferences } from '../types';
+import { isTauri, getTauriAPI } from './tauri';
 
 const STATE_FILE_NAME = '.player-state.json';
 
@@ -13,10 +14,31 @@ export function getSupportedExtensions(prefs: FileTypePreferences): string[] {
 }
 
 /**
- * Opens the native directory picker dialog with readwrite access.
+ * Opens the native directory picker dialog.
  */
-export async function pickFolder(): Promise<FileSystemDirectoryHandle> {
+export async function pickFolder(): Promise<FileSystemDirectoryHandle | string> {
+    if (isTauri()) {
+        const api = await getTauriAPI();
+        if (api) {
+            const selected = await api.open({
+                directory: true,
+                multiple: false,
+                title: 'Select Media Folder'
+            });
+            if (selected) return selected as string;
+            throw new Error('User cancelled folder selection');
+        }
+    }
     return await window.showDirectoryPicker({ mode: 'readwrite' });
+}
+
+/**
+ * Get extension from filename
+ */
+function getExtension(filename: string): string | null {
+    const lastDot = filename.lastIndexOf('.');
+    if (lastDot === -1) return null;
+    return filename.slice(lastDot).toLowerCase();
 }
 
 /**
@@ -33,25 +55,113 @@ function getBaseName(filename: string): string {
  */
 function getDirectory(path: string): string {
     const lastSlash = path.lastIndexOf('/');
-    if (lastSlash === -1) return '';
-    return path.slice(0, lastSlash);
+    const lastBackslash = path.lastIndexOf('\\');
+    const separatorIndex = Math.max(lastSlash, lastBackslash);
+    if (separatorIndex === -1) return '';
+    return path.slice(0, separatorIndex);
 }
 
 /**
- * Recursively scans a directory and returns a flat list of supported media files.
- * Also finds matching subtitle files for each media file.
+ * Scans a directory for media and subtitle files.
  */
 export async function scanDirectory(
+    dir: FileSystemDirectoryHandle | string,
+    prefs: FileTypePreferences
+): Promise<MediaFile[]> {
+    if (isTauri() && typeof dir === 'string') {
+        return scanDirectoryTauri(dir, prefs);
+    } else {
+        return scanDirectoryWeb(dir as FileSystemDirectoryHandle, prefs);
+    }
+}
+
+async function scanDirectoryTauri(
+    baseDir: string,
+    prefs: FileTypePreferences
+): Promise<MediaFile[]> {
+    const api = await getTauriAPI();
+    if (!api) return [];
+
+    const files: MediaFile[] = [];
+    const subtitleExts = new Set(prefs.subtitles.map(e => e.toLowerCase()));
+    const supportedVideo = new Set(prefs.video.map(e => e.toLowerCase()));
+    const supportedAudio = new Set(prefs.audio.map(e => e.toLowerCase()));
+
+    const allFiles: Array<{
+        name: string;
+        path: string;
+        type: 'video' | 'audio' | 'subtitle';
+        baseName: string;
+        directory: string;
+    }> = [];
+
+    const scanDir = async (path: string) => {
+        const entries = await api.readDir(path);
+        const sep = path.includes('\\') ? '\\' : '/';
+        for (const entry of entries) {
+            const entryPath = `${path}${sep}${entry.name}`;
+            
+            if (entry.isDirectory) {
+                await scanDir(entryPath);
+            } else if (entry.isFile) {
+                const ext = getExtension(entry.name || '');
+                if (!ext) continue;
+
+                const baseName = getBaseName(entry.name || '');
+                const directory = getDirectory(entryPath);
+
+                if (supportedVideo.has(ext)) {
+                    allFiles.push({ name: entry.name || '', path: entryPath, type: 'video', baseName, directory });
+                } else if (supportedAudio.has(ext)) {
+                    allFiles.push({ name: entry.name || '', path: entryPath, type: 'audio', baseName, directory });
+                } else if (subtitleExts.has(ext)) {
+                    allFiles.push({ name: entry.name || '', path: entryPath, type: 'subtitle', baseName, directory });
+                }
+            }
+        }
+    };
+
+    await scanDir(baseDir);
+
+    // Group subtitles
+    const subtitlesByMedia: Record<string, string[]> = {};
+    for (const file of allFiles) {
+        if (file.type === 'subtitle') {
+            const key = `${file.directory}/${file.baseName}`;
+            if (!subtitlesByMedia[key]) subtitlesByMedia[key] = [];
+            subtitlesByMedia[key].push(file.path);
+        }
+    }
+
+    for (const file of allFiles) {
+        if (file.type === 'video' || file.type === 'audio') {
+            const key = `${file.directory}/${file.baseName}`;
+            const relativePath = file.path.startsWith(baseDir) 
+                ? file.path.slice(baseDir.length).replace(/^[\\\/]/, '') 
+                : file.path;
+
+            files.push({
+                name: file.name,
+                relativePath,
+                nativePath: file.path,
+                type: file.type,
+                subtitleHandles: subtitlesByMedia[key] || [],
+            });
+        }
+    }
+
+    return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+async function scanDirectoryWeb(
     dirHandle: FileSystemDirectoryHandle,
-    prefs: FileTypePreferences,
-    basePath = ''
+    prefs: FileTypePreferences
 ): Promise<MediaFile[]> {
     const files: MediaFile[] = [];
     const subtitleExts = new Set(prefs.subtitles.map(e => e.toLowerCase()));
     const supportedVideo = new Set(prefs.video.map(e => e.toLowerCase()));
     const supportedAudio = new Set(prefs.audio.map(e => e.toLowerCase()));
 
-    // First pass: collect all media files and subtitle files
     const allFiles: Array<{
         name: string;
         path: string;
@@ -75,52 +185,27 @@ export async function scanDirectory(
                 const directory = getDirectory(entryPath);
 
                 if (supportedVideo.has(ext)) {
-                    allFiles.push({
-                        name: entry.name,
-                        path: entryPath,
-                        handle: entry as FileSystemFileHandle,
-                        type: 'video',
-                        baseName,
-                        directory,
-                    });
+                    allFiles.push({ name: entry.name, path: entryPath, handle: entry as FileSystemFileHandle, type: 'video', baseName, directory });
                 } else if (supportedAudio.has(ext)) {
-                    allFiles.push({
-                        name: entry.name,
-                        path: entryPath,
-                        handle: entry as FileSystemFileHandle,
-                        type: 'audio',
-                        baseName,
-                        directory,
-                    });
+                    allFiles.push({ name: entry.name, path: entryPath, handle: entry as FileSystemFileHandle, type: 'audio', baseName, directory });
                 } else if (subtitleExts.has(ext)) {
-                    allFiles.push({
-                        name: entry.name,
-                        path: entryPath,
-                        handle: entry as FileSystemFileHandle,
-                        type: 'subtitle',
-                        baseName,
-                        directory,
-                    });
+                    allFiles.push({ name: entry.name, path: entryPath, handle: entry as FileSystemFileHandle, type: 'subtitle', baseName, directory });
                 }
             }
         }
     };
 
-    await scanDir(dirHandle, basePath);
+    await scanDir(dirHandle, '');
 
-    // Group subtitle files by their base name and directory
     const subtitlesByMedia: Record<string, FileSystemFileHandle[]> = {};
     for (const file of allFiles) {
         if (file.type === 'subtitle') {
             const key = `${file.directory}/${file.baseName}`;
-            if (!subtitlesByMedia[key]) {
-                subtitlesByMedia[key] = [];
-            }
+            if (!subtitlesByMedia[key]) subtitlesByMedia[key] = [];
             subtitlesByMedia[key].push(file.handle);
         }
     }
 
-    // Build media files with their subtitles
     for (const file of allFiles) {
         if (file.type === 'video' || file.type === 'audio') {
             const key = `${file.directory}/${file.baseName}`;
@@ -138,46 +223,66 @@ export async function scanDirectory(
 }
 
 /**
- * Reads .player-state.json from the folder root if it exists.
+ * Reads state from the folder.
  */
 export async function readState(
-    dirHandle: FileSystemDirectoryHandle
+    dir: FileSystemDirectoryHandle | string
 ): Promise<PlayerState | null> {
-    try {
-        const fileHandle = await dirHandle.getFileHandle(STATE_FILE_NAME);
-        const file = await fileHandle.getFile();
-        const text = await file.text();
-        return JSON.parse(text) as PlayerState;
-    } catch (err) {
-        // File doesn't exist or JSON is malformed — expected, return null
-        if (err instanceof DOMException && err.name === 'NotFoundError') return null;
-        if (err instanceof SyntaxError) return null;
-        // Any other error (permission, I/O) — propagate so callers can handle it
-        throw err;
+    if (isTauri() && typeof dir === 'string') {
+        const api = await getTauriAPI();
+        if (!api) return null;
+        try {
+            const sep = dir.includes('\\') ? '\\' : '/';
+            const path = `${dir}${sep}${STATE_FILE_NAME}`;
+            const contents = await api.readFile(path);
+            const text = new TextDecoder().decode(contents);
+            return JSON.parse(text) as PlayerState;
+        } catch {
+            return null;
+        }
+    } else {
+        try {
+            const dirHandle = dir as FileSystemDirectoryHandle;
+            const fileHandle = await dirHandle.getFileHandle(STATE_FILE_NAME);
+            const file = await fileHandle.getFile();
+            const text = await file.text();
+            return JSON.parse(text) as PlayerState;
+        } catch (err) {
+            if (err instanceof DOMException && err.name === 'NotFoundError') return null;
+            if (err instanceof SyntaxError) return null;
+            throw err;
+        }
     }
 }
 
 /**
- * Writes .player-state.json to the folder root.
+ * Writes state to the folder.
  */
 export async function writeState(
-    dirHandle: FileSystemDirectoryHandle,
+    dir: FileSystemDirectoryHandle | string,
     state: PlayerState
 ): Promise<void> {
-    const fileHandle = await dirHandle.getFileHandle(STATE_FILE_NAME, { create: true });
-    const writable = await fileHandle.createWritable();
-    try {
-        await writable.write(JSON.stringify(state, null, 2));
-    } finally {
-        // Always close the stream — even if write() throws — to avoid a locked file
-        await writable.close();
+    if (isTauri() && typeof dir === 'string') {
+        const api = await getTauriAPI();
+        if (!api) return;
+        const sep = dir.includes('\\') ? '\\' : '/';
+        const path = `${dir}${sep}${STATE_FILE_NAME}`;
+        const text = JSON.stringify(state, null, 2);
+        const contents = new TextEncoder().encode(text);
+        // Using dynamic import for writeTextFile if needed, but we have api.readFile
+        // We'll use tauri-plugin-fs write
+        const { writeFile } = await import('@tauri-apps/plugin-fs');
+        await writeFile(path, contents);
+    } else {
+        const dirHandle = dir as FileSystemDirectoryHandle;
+        const fileHandle = await dirHandle.getFileHandle(STATE_FILE_NAME, { create: true });
+        const writable = await fileHandle.createWritable();
+        try {
+            await writable.write(JSON.stringify(state, null, 2));
+        } finally {
+            await writable.close();
+        }
     }
-}
-
-function getExtension(filename: string): string | null {
-    const lastDot = filename.lastIndexOf('.');
-    if (lastDot === -1) return null;
-    return filename.slice(lastDot).toLowerCase();
 }
 
 export { STATE_FILE_NAME };

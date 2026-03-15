@@ -8,7 +8,7 @@ export interface PlayerStoreState {
     playlist: MediaFile[];
     currentIndex: number;
     currentFile: MediaFile | null;
-    dirHandle: FileSystemDirectoryHandle | null;
+    dirHandle: FileSystemDirectoryHandle | string | null;
 
     // Playback
     isPlaying: boolean;
@@ -21,7 +21,7 @@ export interface PlayerStoreState {
 
 export interface PlayerStoreActions {
     setPlaylist: (files: MediaFile[]) => void;
-    setDirHandle: (handle: FileSystemDirectoryHandle | null) => void;
+    setDirHandle: (handle: FileSystemDirectoryHandle | string | null) => void;
     play: (file: MediaFile) => void;
     next: () => void;
     prev: () => void;
