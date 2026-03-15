@@ -23,6 +23,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showToggle, setShowToggle] = useState(true);
   const [showLogs, setShowLogs] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Ref to always have the latest state for beforeunload / throttled writes
   const stateRef = useRef(state);
@@ -123,6 +124,17 @@ function App() {
       settings: {
         ...s.settings,
         subtitles: { ...s.settings.subtitles, fontSize: size },
+      },
+    }));
+    saveCurrentState();
+  }, [saveCurrentState]);
+
+  const setSubtitleOffset = useCallback((offset: number) => {
+    setState((s) => ({
+      ...s,
+      settings: {
+        ...s.settings,
+        subtitles: { ...s.settings.subtitles, offset },
       },
     }));
     saveCurrentState();
@@ -292,8 +304,9 @@ function App() {
     toggleLoop,
     toggleSubtitles,
     setSubtitleFontSize,
+    setSubtitleOffset,
     reset,
-  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, setAspectRatio, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, reset]);
+  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, setAspectRatio, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, setSubtitleOffset, reset]);
 
   // ── Folder ready handler: read saved state ──
 
@@ -364,6 +377,90 @@ function App() {
     setShowResumeDialog(false);
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const items = e.dataTransfer.items;
+    if (!items || items.length === 0) return;
+
+    const { loadPreferences } = await import('./services/db');
+    const { DEFAULT_FILE_TYPES } = await import('./types');
+    const { scanDirectory } = await import('./services/fileSystem');
+    const { getExtension } = await import('./services/core/utils');
+
+    const storedPrefs = await loadPreferences();
+    const prefs = storedPrefs ?? DEFAULT_FILE_TYPES;
+    const videoExts = new Set(prefs.video);
+    const audioExts = new Set(prefs.audio);
+
+    const collectedFiles: MediaFile[] = [];
+    let firstDirHandle: FileSystemDirectoryHandle | null = null;
+
+    try {
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind !== 'file') continue;
+
+        // @ts-ignore
+        const handle = await item.getAsFileSystemHandle();
+        if (handle.kind === 'directory') {
+          if (!firstDirHandle) firstDirHandle = handle as FileSystemDirectoryHandle;
+          const files = await scanDirectory(handle, prefs);
+          collectedFiles.push(...files);
+        } else if (handle.kind === 'file') {
+          const ext = getExtension(handle.name);
+          if (ext && (videoExts.has(ext) || audioExts.has(ext))) {
+            collectedFiles.push({
+              name: handle.name,
+              relativePath: handle.name,
+              handle: handle as FileSystemFileHandle,
+              type: videoExts.has(ext) ? 'video' : 'audio',
+              subtitleHandles: [], // Difficult to find subtitles for raw dropped files without parent handle
+            });
+          }
+        }
+      }
+
+      if (collectedFiles.length > 0) {
+        // Clear previous state and load the new dropped set
+        await saveCurrentState();
+        
+        // Sort files by name/path
+        collectedFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+
+        setState((s) => ({
+          ...s,
+          dirHandle: firstDirHandle || s.dirHandle, // Keep old handle if only files were dropped
+          playlist: collectedFiles,
+          currentFile: collectedFiles[0],
+          currentIndex: 0,
+          isPlaying: true,
+          position: 0,
+          duration: 0,
+        }));
+        
+        setShowResumeDialog(false);
+        setSavedState(null);
+      }
+    } catch (err) {
+      console.error('Drop failed:', err);
+    }
+  };
+
   // Keep a stable ref to handleResume so the auto-resume timer doesn't
   // capture a stale closure (savedState / state.playlist change after mount)
   const handleResumeRef = useRef(handleResume);
@@ -376,18 +473,45 @@ function App() {
     return () => clearTimeout(timeout);
   }, [showResumeDialog]);
 
+  // Auto-play first file if nothing is playing after folder ready
+  useEffect(() => {
+    if (state.dirHandle && state.playlist.length > 0 && !state.currentFile && !showResumeDialog) {
+      play(state.playlist[0]);
+    }
+  }, [state.dirHandle, state.playlist, state.currentFile, showResumeDialog, play]);
+
   // No folder selected — show the picker
   if (!state.dirHandle) {
     if (!hasFullSupport) {
       return (
-        <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center">
+        <div 
+          className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center relative"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <FallbackPicker onFilesSelected={handleFallbackFiles} />
+          {isDragging && (
+            <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
+              <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
+            </div>
+          )}
         </div>
       );
     }
     return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center">
+      <div 
+        className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         <FolderPicker onFolderReady={handleFolderReady} />
+        {isDragging && (
+          <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
+            <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
+          </div>
+        )}
       </div>
     );
   }
@@ -395,7 +519,17 @@ function App() {
   // Folder selected — show sidebar + player area
   return (
     <PlayerContext.Provider value={contextValue}>
-      <div className="min-h-screen h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
+      <div 
+        className="min-h-screen h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden relative"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragging && (
+          <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
+            <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
+          </div>
+        )}
         {/* Sidebar */}
         <aside className={`
           ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'}

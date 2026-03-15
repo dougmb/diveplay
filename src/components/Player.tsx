@@ -20,6 +20,7 @@ export default function Player() {
     const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
     const [selectedAudioTrack, setSelectedAudioTrack] = useState<number>(0);
     const [showTrackMenu, setShowTrackMenu] = useState(false);
+    const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
     const [transcodeSeekTime, setTranscodeSeekTime] = useState<number>(0);
     
     const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -135,7 +136,7 @@ export default function Player() {
                         }
 
                         if (text) {
-                            const vtt = toVtt(text, name);
+                            const vtt = toVtt(text, name, settings.subtitles.offset);
                             const url = `data:text/vtt;charset=utf-8,${encodeURIComponent(vtt)}`;
                             tracks.push({ name, url });
                         }
@@ -424,6 +425,10 @@ export default function Player() {
 
     const audioStreams = mediaInfo?.streams.filter(s => s.codec_type === 'audio') || [];
 
+    const handleOffsetChange = (delta: number) => {
+        player.setSubtitleOffset(settings.subtitles.offset + delta);
+    };
+
     return (
         <div
             ref={containerRef}
@@ -659,6 +664,80 @@ export default function Player() {
                         </svg>
                     </button>
 
+                    {/* Subtitle Sync/Size Menu Trigger */}
+                    <div className="relative">
+                        <button
+                            onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
+                            className={`p-1.5 transition-colors cursor-pointer ${showSubtitleMenu ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'}`}
+                            title="Subtitle Settings"
+                        >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 5h12M3 10h12M3 15h12M17 5v14m-4-7h8" />
+                            </svg>
+                        </button>
+
+                        {showSubtitleMenu && (
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl overflow-hidden z-20">
+                                <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-800/50">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Subtitle Settings</span>
+                                </div>
+                                <div className="p-3 space-y-4">
+                                    {/* Sync Offset */}
+                                    <div className="space-y-1.5">
+                                        <div className="flex justify-between text-[10px] text-zinc-500 font-medium">
+                                            <span>SYNC OFFSET</span>
+                                            <span className={settings.subtitles.offset === 0 ? 'text-zinc-600' : 'text-indigo-400'}>
+                                                {settings.subtitles.offset > 0 ? '+' : ''}{settings.subtitles.offset.toFixed(1)}s
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button 
+                                                onClick={() => handleOffsetChange(-0.5)}
+                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
+                                            >
+                                                -0.5s
+                                            </button>
+                                            <button 
+                                                onClick={() => player.setSubtitleOffset(0)}
+                                                className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
+                                            >
+                                                Reset
+                                            </button>
+                                            <button 
+                                                onClick={() => handleOffsetChange(0.5)}
+                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
+                                            >
+                                                +0.5s
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Font Size */}
+                                    <div className="space-y-1.5">
+                                        <div className="flex justify-between text-[10px] text-zinc-500 font-medium">
+                                            <span>FONT SIZE</span>
+                                            <span className="text-zinc-400">{settings.subtitles.fontSize}px</span>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button 
+                                                onClick={() => player.setSubtitleFontSize(Math.max(12, settings.subtitles.fontSize - 2))}
+                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
+                                            >
+                                                Smaller
+                                            </button>
+                                            <button 
+                                                onClick={() => player.setSubtitleFontSize(Math.min(32, settings.subtitles.fontSize + 2))}
+                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
+                                            >
+                                                Larger
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
                     {/* Track Selection Menu Trigger */}
                     {capabilities.supportsAudioTracks && audioStreams.length > 0 && (
                         <div className="relative">
@@ -740,13 +819,55 @@ function formatTime(seconds: number): string {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function toVtt(content: string, filename: string): string {
+function toVtt(content: string, filename: string, offset: number = 0): string {
     const ext = filename.split('.').pop()?.toLowerCase();
-    if (ext === 'vtt') return content;
+    
+    // Helper to add offset to "HH:MM:SS.mmm" or "HH:MM:SS,mmm"
+    const shiftTime = (timeStr: string) => {
+        try {
+            const parts = timeStr.replace(',', '.').split(':');
+            if (parts.length !== 3) return timeStr;
+            const [h, m, s_ms] = parts;
+            let totalSeconds = parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s_ms);
+            totalSeconds = Math.max(0, totalSeconds + offset);
+            
+            const nh = Math.floor(totalSeconds / 3600);
+            const nm = Math.floor((totalSeconds % 3600) / 60);
+            const ns = (totalSeconds % 60).toFixed(3);
+            
+            return `${nh.toString().padStart(2, '0')}:${nm.toString().padStart(2, '0')}:${ns.padStart(6, '0')}`;
+        } catch {
+            return timeStr;
+        }
+    };
+
     if (ext === 'srt') {
         const normalised = content.trim().replace(/\r\n|\r/g, '\n');
-        const fixed = normalised.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+        // Match timestamps: 00:00:20,000 --> 00:00:24,400
+        const fixed = normalised.replace(/(\d{2}:\d{2}:\d{2}[.,]\d{3}) --> (\d{2}:\d{2}:\d{2}[.,]\d{3})/g, 
+            (_, start, end) => `${shiftTime(start)} --> ${shiftTime(end)}`);
         return 'WEBVTT\n\n' + fixed;
     }
+    
+    if (ext === 'vtt') {
+        const normalised = content.trim().replace(/\r\n|\r/g, '\n');
+        // Only apply offset if needed
+        if (offset === 0 && normalised.startsWith('WEBVTT')) return normalised;
+        
+        const lines = normalised.split('\n');
+        const result = lines.map(line => {
+            if (line.includes(' --> ')) {
+                return line.replace(/(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})/g,
+                    (_, start, end) => `${shiftTime(start)} --> ${shiftTime(end)}`);
+            }
+            return line;
+        });
+        
+        if (!normalised.startsWith('WEBVTT')) {
+            return 'WEBVTT\n\n' + result.join('\n');
+        }
+        return result.join('\n');
+    }
+    
     return content;
 }
