@@ -1,9 +1,10 @@
 export interface MediaFile {
     name: string;
     relativePath: string;
-    handle: FileSystemFileHandle;
+    handle?: FileSystemFileHandle;
+    nativePath?: string;
     type: 'video' | 'audio';
-    subtitleHandles?: FileSystemFileHandle[];
+    subtitleHandles?: Array<FileSystemFileHandle | string>;
 }
 
 export interface SubtitleSettings {
@@ -39,3 +40,20 @@ export const DEFAULT_FILE_TYPES: FileTypePreferences = {
     audio: ['.mp3', '.flac', '.ogg', '.wav', '.aac', '.m4a'],
     subtitles: ['.srt', '.vtt', '.sub'],
 };
+
+// Tauri Media Info types
+export interface MediaStream {
+    index: number;
+    codec_type: string;
+    codec_name: string;
+    tags?: Record<string, any>;
+}
+
+export interface MediaFormat {
+    duration: string;
+}
+
+export interface MediaInfo {
+    streams: MediaStream[];
+    format: MediaFormat;
+}

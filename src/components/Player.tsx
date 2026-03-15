@@ -1,7 +1,9 @@
 // Player.tsx — Video/audio player with custom controls
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { usePlayer } from '../store/playerStore';
-import { ensurePlayable, isHttpContext } from '../services/codecService';
+import { ensurePlayable, getMediaInfo } from '../services/codecService';
+import { getTauriAPI, isTauri } from '../services/tauri';
+import type { MediaInfo } from '../types';
 
 export default function Player() {
     const player = usePlayer();
@@ -14,6 +16,11 @@ export default function Player() {
     const [hasAudioTrack, setHasAudioTrack] = useState(true);
     const [showNoAudioAlert, setShowNoAudioAlert] = useState(false);
     const [mediaError, setMediaError] = useState<string | null>(null);
+    const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
+    const [selectedAudioTrack, setSelectedAudioTrack] = useState<number>(0);
+    const [showTrackMenu, setShowTrackMenu] = useState(false);
+    const [transcodeSeekTime, setTranscodeSeekTime] = useState<number>(0);
+    
     const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const progressRef = useRef<HTMLDivElement | null>(null);
@@ -21,26 +28,41 @@ export default function Player() {
 
     const { currentFile, isPlaying, settings, duration, position } = player;
 
+    // Sync duration from mediaInfo when it becomes available
+    useEffect(() => {
+        if (mediaInfo?.format.duration) {
+            const dur = parseFloat(mediaInfo.format.duration);
+            if (!isNaN(dur) && dur > 0) {
+                player.setDuration(dur);
+            }
+        }
+    }, [mediaInfo]);
+
     // Clear media error when file changes
-    useEffect(() => { setMediaError(null); }, [currentFile]);
+    useEffect(() => { 
+        setMediaError(null); 
+        setMediaInfo(null);
+        setSelectedAudioTrack(0);
+        setShowTrackMenu(false);
+        setTranscodeSeekTime(0);
+    }, [currentFile]);
 
     // Called when the browser can't decode the file
     const handleMediaError = useCallback((e: React.SyntheticEvent<HTMLMediaElement>) => {
         const el = e.currentTarget;
         const code = el.error?.code;
-        const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
-        const MEDIA_ERR_DECODE = 3;
 
-        if (code === MEDIA_ERR_SRC_NOT_SUPPORTED || code === MEDIA_ERR_DECODE) {
-            const isFileProtocol = !isHttpContext();
-            if (isFileProtocol) {
+        if (code) {
+            console.error('Media error code:', code, 'Source:', el.src);
+            if (isTauri()) {
                 setMediaError(
-                    'This file uses a codec not supported by your browser (e.g. MKV, HEVC or AC3). ' +
-                    'The desktop version of DivePlay will support these formats natively.'
+                    'Failed to play this file. This usually happens if FFmpeg transcoding failed ' +
+                    'or if the file is not accessible. Check the logs for details.'
                 );
             } else {
                 setMediaError(
-                    'Failed to play this file. The format may be corrupted or unsupported by your browser.'
+                    'This codec or container (e.g. MKV, HEVC, AC3) is not supported by your browser directly. ' +
+                    'Use the desktop version for full compatibility.'
                 );
             }
         }
@@ -58,8 +80,29 @@ export default function Player() {
 
         (async () => {
             try {
-                const file = await currentFile.handle.getFile();
-                const { url } = await ensurePlayable(file);
+                let info: MediaInfo | null = null;
+                if (isTauri() && currentFile.nativePath) {
+                    info = await getMediaInfo(currentFile.nativePath);
+                    if (!cancelled) setMediaInfo(info);
+                }
+
+                // Check if we need transcoding (HEVC/AC3/DTS/TrueHD)
+                const isHEVC = info?.streams.some(s => s.codec_name === 'hevc' || s.codec_name === 'h265');
+                const isUnsupportedAudio = info?.streams.some(s => 
+                    s.codec_type === 'audio' && 
+                    ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(s.codec_name.toLowerCase())
+                );
+                
+                // Also transcode if it's an MKV, as browsers have spotty support for MKV containers with certain streams
+                const isMKV = currentFile.name.toLowerCase().endsWith('.mkv');
+                
+                const shouldTranscode = isTauri() && (isHEVC || isUnsupportedAudio || isMKV);
+
+                const { url } = await ensurePlayable(currentFile, {
+                    transcode: shouldTranscode,
+                    audioTrack: selectedAudioTrack,
+                    startTime: transcodeSeekTime
+                });
 
                 if (cancelled) {
                     URL.revokeObjectURL(url);
@@ -71,12 +114,29 @@ export default function Player() {
                 // Load subtitles — use data: URLs so Chrome doesn't block blob:null on <track>
                 const tracks: Array<{ name: string; url: string }> = [];
                 if (currentFile.subtitleHandles && currentFile.subtitleHandles.length > 0) {
-                    for (const subtitleHandle of currentFile.subtitleHandles) {
-                        const subtitleFile = await subtitleHandle.getFile();
-                        const text = await subtitleFile.text();
-                        const vtt = toVtt(text, subtitleHandle.name);
-                        const url = `data:text/vtt;charset=utf-8,${encodeURIComponent(vtt)}`;
-                        tracks.push({ name: subtitleHandle.name, url });
+                    const api = await getTauriAPI();
+                    for (const handleOrPath of currentFile.subtitleHandles) {
+                        let text = '';
+                        let name = '';
+                        
+                        if (typeof handleOrPath === 'string') {
+                            if (api) {
+                                const contents = await api.readFile(handleOrPath);
+                                text = new TextDecoder().decode(contents);
+                                const lastSlash = Math.max(handleOrPath.lastIndexOf('/'), handleOrPath.lastIndexOf('\\'));
+                                name = handleOrPath.slice(lastSlash + 1);
+                            }
+                        } else {
+                            const subtitleFile = await handleOrPath.getFile();
+                            text = await subtitleFile.text();
+                            name = handleOrPath.name;
+                        }
+
+                        if (text) {
+                            const vtt = toVtt(text, name);
+                            const url = `data:text/vtt;charset=utf-8,${encodeURIComponent(vtt)}`;
+                            tracks.push({ name, url });
+                        }
                     }
                 }
                 if (!cancelled) setSubtitleTracks(tracks);
@@ -96,7 +156,7 @@ export default function Player() {
             });
             setSubtitleTracks([]);
         };
-    }, [currentFile]);
+    }, [currentFile, selectedAudioTrack, transcodeSeekTime]);
 
     // Sync play/pause state
     useEffect(() => {
@@ -124,13 +184,17 @@ export default function Player() {
     useEffect(() => {
         const el = mediaRef.current;
         if (!el || !blobUrl) return;
-        if (position > 0 && Math.abs(el.currentTime - position) > 1) {
-            el.currentTime = position;
+
+        // If transcoding, the element's 0 is actually transcodeSeekTime
+        const targetTime = Math.max(0, position - transcodeSeekTime);
+
+        if (position > 0 && Math.abs(el.currentTime - targetTime) > 1.5) {
+            el.currentTime = targetTime;
             if (isPlaying) {
                 el.play().catch(() => { /* autoplay blocked */ });
             }
         }
-    }, [position, blobUrl, isPlaying]);
+    }, [position, blobUrl, isPlaying, transcodeSeekTime]);
 
     // Auto-hide controls
     const resetHideTimer = useCallback(() => {
@@ -169,7 +233,7 @@ export default function Player() {
         return () => document.removeEventListener('fullscreenchange', onFsChange);
     }, []);
 
-    // Sync play/pause state
+    // Key handlers
     useEffect(() => {
         const handleKey = (e: KeyboardEvent) => {
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -213,17 +277,37 @@ export default function Player() {
     const handleTimeUpdate = () => {
         const el = mediaRef.current;
         if (!el) return;
-        player.setPosition(el.currentTime);
+        
+        // If we are transcoding, the actual position is the seek offset + current video time
+        const actualPosition = transcodeSeekTime + el.currentTime;
+        player.setPosition(actualPosition);
     };
 
     const handleLoadedMetadata = () => {
         const el = mediaRef.current;
         if (!el) return;
-        player.setDuration(el.duration);
+        
+        // Use mediaInfo duration if available
+        if (mediaInfo?.format.duration) {
+            const dur = parseFloat(mediaInfo.format.duration);
+            if (!isNaN(dur) && dur > 0) {
+                player.setDuration(dur);
+            } else {
+                player.setDuration(el.duration);
+            }
+        } else {
+            // If transcoding, the el.duration will only show the duration from the seek point to end
+            // so we should only trust it if not transcoding or if we don't have mediaInfo
+            const isTranscoding = transcodeSeekTime > 0;
+            if (!isTranscoding) {
+                player.setDuration(el.duration);
+            }
+        }
+
         el.volume = settings.volume;
         el.playbackRate = settings.playbackRate;
 
-        // Check if video has an audio track
+        // Simple audio track check
         const audioTracks = (el as HTMLMediaElement & { audioTracks?: { length: number } }).audioTracks;
         if (audioTracks && audioTracks.length > 0) {
             setHasAudioTrack(true);
@@ -234,7 +318,7 @@ export default function Player() {
         }
 
         if (position > 0) {
-            el.currentTime = position;
+            el.currentTime = Math.max(0, position - transcodeSeekTime);
         }
         if (isPlaying) {
             el.play().catch(() => {
@@ -261,7 +345,31 @@ export default function Player() {
         if (!el || !bar) return;
         const rect = bar.getBoundingClientRect();
         const pct = (e.clientX - rect.left) / rect.width;
-        el.currentTime = pct * (el.duration || 0);
+        const newTime = pct * (duration || 0);
+
+        // Check if we are currently transcoding
+        const isHEVC = mediaInfo?.streams.some(s => s.codec_name === 'hevc' || s.codec_name === 'h265');
+        const isUnsupportedAudio = mediaInfo?.streams.some(s => 
+            s.codec_type === 'audio' && 
+            ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(s.codec_name.toLowerCase())
+        );
+        const isMKV = currentFile?.name.toLowerCase().endsWith('.mkv');
+        const shouldTranscode = isTauri() && (isHEVC || isUnsupportedAudio || isMKV);
+
+        if (shouldTranscode) {
+            // Stop current playback and clear source to prevent buffer loops
+            if (el) {
+                el.pause();
+                el.src = '';
+                el.load();
+            }
+            
+            player.setPosition(newTime);
+            setTranscodeSeekTime(newTime);
+        } else {
+            el.currentTime = newTime;
+            player.setPosition(newTime);
+        }
     };
 
     const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
@@ -306,6 +414,8 @@ export default function Player() {
         player.setAspectRatio(ratios[nextIdx]);
     };
 
+    const audioStreams = mediaInfo?.streams.filter(s => s.codec_type === 'audio') || [];
+
     return (
         <div
             ref={containerRef}
@@ -329,7 +439,7 @@ export default function Player() {
                 {isVideo ? (
                     <>
                         <video
-                            key={currentFile.handle.name}
+                            key={`${currentFile.nativePath || currentFile.relativePath}-${selectedAudioTrack}-${transcodeSeekTime}`}
                             ref={mediaRef as React.RefObject<HTMLVideoElement>}
                             src={blobUrl || ''}
                             className={`w-full h-full ${aspectRatioClass}`}
@@ -540,6 +650,41 @@ export default function Player() {
                             <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" />
                         </svg>
                     </button>
+
+                    {/* Track Selection Menu Trigger */}
+                    {isTauri() && audioStreams.length > 0 && (
+                        <div className="relative">
+                            <button
+                                onClick={() => setShowTrackMenu(!showTrackMenu)}
+                                className={`px-2 py-1 text-xs transition-colors cursor-pointer rounded hover:bg-white/10 ${showTrackMenu ? 'text-indigo-400' : 'text-zinc-400'}`}
+                                title="Audio Tracks"
+                            >
+                                Track {selectedAudioTrack + 1}
+                            </button>
+                            
+                            {showTrackMenu && (
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl overflow-hidden z-20">
+                                    <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-800/50">
+                                        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Audio Tracks</span>
+                                    </div>
+                                    <div className="max-h-48 overflow-y-auto">
+                                        {audioStreams.map((stream, idx) => (
+                                            <button
+                                                key={stream.index}
+                                                onClick={() => {
+                                                    setSelectedAudioTrack(idx);
+                                                    setShowTrackMenu(false);
+                                                }}
+                                                className={`w-full text-left px-3 py-2 text-xs transition-colors hover:bg-zinc-800 ${selectedAudioTrack === idx ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-300'}`}
+                                            >
+                                                {stream.tags?.language || 'Unknown'} ({stream.codec_name})
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     {/* Aspect Ratio */}
                     {isVideo && (

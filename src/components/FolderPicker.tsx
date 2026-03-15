@@ -7,7 +7,7 @@ import { DEFAULT_FILE_TYPES, type FileTypePreferences, type MediaFile } from '..
 import SettingsDialog from './SettingsDialog';
 
 interface FolderPickerProps {
-    onFolderReady: (handle: FileSystemDirectoryHandle, files: MediaFile[]) => void;
+    onFolderReady: (handle: FileSystemDirectoryHandle | string, files: MediaFile[]) => void;
 }
 
 export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
