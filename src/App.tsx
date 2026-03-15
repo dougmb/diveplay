@@ -4,6 +4,7 @@ import FallbackPicker from './components/FallbackPicker';
 import Playlist from './components/Playlist';
 import Player from './components/Player';
 import ResumeDialog from './components/ResumeDialog';
+import LogViewer from './components/LogViewer';
 import { PlayerContext, initialState } from './store/playerStore';
 import type { PlayerStoreState } from './store/playerStore';
 import { readState, writeState } from './services/fileSystem';
@@ -21,6 +22,7 @@ function App() {
   const [showResumeDialog, setShowResumeDialog] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showToggle, setShowToggle] = useState(true);
+  const [showLogs, setShowLogs] = useState(false);
 
   // Ref to always have the latest state for beforeunload / throttled writes
   const stateRef = useRef(state);
@@ -175,6 +177,18 @@ function App() {
       if (timeout) clearTimeout(timeout);
     };
   }, [sidebarCollapsed]);
+
+  // Keyboard shortcut for logs (L key)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.code === 'KeyL') {
+        setShowLogs(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // ── Other actions ──
 
@@ -436,6 +450,9 @@ function App() {
             onSelectNewFolder={handleSelectNewFolder}
           />
         )}
+
+        {/* Log viewer */}
+        <LogViewer isOpen={showLogs} onClose={() => setShowLogs(false)} />
       </div>
     </PlayerContext.Provider>
   );
