@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 use tauri::path::BaseDirectory;
 use axum::{
@@ -10,11 +11,37 @@ use axum::{
 };
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
-use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::process::Command;
+use tokio::fs::File;
+
+static LOG_BUFFER: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+macro_rules! app_log {
+    ($($arg:tt)*) => {{
+        let msg = format!($($arg)*);
+        eprintln!("[DivePlay] {}", msg);
+        if let Ok(mut buf) = LOG_BUFFER.lock() {
+            let timestamp = chrono_lite_timestamp();
+            buf.push(format!("[{}] {}", timestamp, msg));
+            if buf.len() > 1000 {
+                buf.remove(0);
+            }
+        }
+    }};
+}
+
+fn chrono_lite_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+    let hours = (secs / 3600) % 24;
+    let mins = (secs / 60) % 60;
+    let secs = secs % 60;
+    format!("{:02}:{:02}:{:02}", hours, mins, secs)
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MediaInfo {
@@ -50,6 +77,18 @@ struct AppState {
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[tauri::command]
+fn get_logs() -> Vec<String> {
+    LOG_BUFFER.lock().map(|buf| buf.clone()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn clear_logs() {
+    if let Ok(mut buf) = LOG_BUFFER.lock() {
+        buf.clear();
+    }
+}
+
 fn get_sidecar_path(handle: &AppHandle, name: &str) -> Result<PathBuf, String> {
     #[cfg(target_os = "windows")]
     let ext = ".exe";
@@ -57,44 +96,85 @@ fn get_sidecar_path(handle: &AppHandle, name: &str) -> Result<PathBuf, String> {
     let ext = "";
 
     let binary_name = format!("{}{}", name, ext);
+    app_log!("Looking for binary: {}", binary_name);
 
     // 1. Try standard Resource directory (Tauri v2)
     if let Ok(path) = handle.path().resolve(format!("binaries/{}", binary_name), BaseDirectory::Resource) {
+        app_log!("  Try 1 - Resource: {:?}", path);
         if path.exists() {
+            app_log!("  Found at: {:?}", path);
             return Ok(path);
         }
     }
 
-    // 2. Try relative to the executable (common for portable and NSIS side-by-side)
+    // 2. Try resources/binaries/ folder (alternative location)
+    if let Ok(path) = handle.path().resolve(format!("resources/binaries/{}", binary_name), BaseDirectory::Resource) {
+        app_log!("  Try 2 - Resources: {:?}", path);
+        if path.exists() {
+            app_log!("  Found at: {:?}", path);
+            return Ok(path);
+        }
+    }
+
+    // 3. Try AppData path directly (for installed apps)
+    if let Ok(app_data) = std::env::var("APPDATA") {
+        let app_data_path = PathBuf::from(app_data).join("com.diveplay.app").join("resources").join("binaries").join(&binary_name);
+        app_log!("  Try 3 - AppData: {:?}", app_data_path);
+        if app_data_path.exists() {
+            app_log!("  Found at: {:?}", app_data_path);
+            return Ok(app_data_path);
+        }
+    }
+
+    // 4. Try relative to the executable (common for portable and NSIS side-by-side)
     if let Ok(exe_path) = std::env::current_exe() {
+        app_log!("  Try 4 - Exe dir: {:?}", exe_path);
         if let Some(exe_dir) = exe_path.parent() {
+            // Check in ./resources/binaries/
+            let path = exe_dir.join("resources").join("binaries").join(&binary_name);
+            app_log!("    Check: {:?}", path);
+            if path.exists() {
+                app_log!("  Found at: {:?}", path);
+                return Ok(path);
+            }
             // Check in ./binaries/
             let path = exe_dir.join("binaries").join(&binary_name);
+            app_log!("    Check: {:?}", path);
             if path.exists() {
+                app_log!("  Found at: {:?}", path);
                 return Ok(path);
             }
             // Check in ./
             let path = exe_dir.join(&binary_name);
+            app_log!("    Check: {:?}", path);
             if path.exists() {
+                app_log!("  Found at: {:?}", path);
                 return Ok(path);
             }
         }
     }
 
-    // 3. Development fallbacks
+    // 5. Development fallbacks - check relative to current working directory
+    let dev_base = std::env::current_dir().unwrap_or_default();
+    app_log!("  Try 5 - Dev paths from: {:?}", dev_base);
     let dev_paths = [
-        std::env::current_dir().unwrap_or_default().join("binaries").join(&binary_name),
-        std::env::current_dir().unwrap_or_default().join("src-tauri").join("binaries").join(&binary_name),
+        dev_base.join("binaries").join(&binary_name),
+        dev_base.join("src-tauri").join("binaries").join(&binary_name),
+        dev_base.join("target").join("release").join("binaries").join(&binary_name),
+        dev_base.join("target").join("debug").join("binaries").join(&binary_name),
     ];
 
     for path in dev_paths {
+        app_log!("    Check: {:?}", path);
         if path.exists() {
+            app_log!("  Found at: {:?}", path);
             return Ok(path);
         }
     }
 
-    // 4. Last resort: check system PATH
-    Ok(PathBuf::from(&binary_name))
+    // 6. Last resort: check system PATH
+    app_log!("  Try 6 - Falling back to system PATH");
+    Err(format!("Binary {} not found in any location", binary_name))
 }
 
 #[tauri::command]
@@ -107,7 +187,17 @@ async fn get_streaming_url(handle: AppHandle, path: String) -> Result<String, St
 
 #[tauri::command]
 async fn get_media_info(handle: AppHandle, path: String) -> Result<MediaInfo, String> {
-    let ffprobe_path = get_sidecar_path(&handle, "ffprobe")?;
+    app_log!("get_media_info called for: {}", path);
+    
+    let ffprobe_path = match get_sidecar_path(&handle, "ffprobe") {
+        Ok(p) => p,
+        Err(e) => {
+            app_log!("ERROR: ffprobe not found: {}", e);
+            return Err(format!("ffprobe not found: {}", e));
+        }
+    };
+    
+    app_log!("Using ffprobe: {:?}", ffprobe_path);
     
     let mut cmd = Command::new(&ffprobe_path);
     
@@ -123,15 +213,24 @@ async fn get_media_info(handle: AppHandle, path: String) -> Result<MediaInfo, St
         ])
         .output()
         .await
-        .map_err(|e| format!("Failed to execute ffprobe: {}", e))?;
+        .map_err(|e| {
+            app_log!("ERROR: Failed to execute ffprobe: {}", e);
+            format!("Failed to execute ffprobe: {}", e)
+        })?;
 
     if !output.status.success() {
-        return Err("ffprobe failed to read file".to_string());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        app_log!("ERROR: ffprobe failed: {}", stderr);
+        return Err(format!("ffprobe failed: {}", stderr));
     }
 
     let info: MediaInfo = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("Failed to parse ffprobe output: {}", e))?;
+        .map_err(|e| {
+            app_log!("ERROR: Failed to parse ffprobe output: {}", e);
+            format!("Failed to parse ffprobe output: {}", e)
+        })?;
 
+    app_log!("Successfully got media info for: {}", path);
     Ok(info)
 }
 
@@ -142,11 +241,22 @@ async fn stream_file(
     req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
     if params.token != state.stream_token {
+        app_log!("Stream request: UNAUTHORIZED token");
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    // path_str from axum Path might be URL encoded
+    let path_str = urlencoding::decode(&path_str).map(|s| s.into_owned()).unwrap_or(path_str);
     let path = PathBuf::from(&path_str);
-    if !path.exists() || !path.is_file() {
+    
+    app_log!("Streaming request for: {}", path_str);
+
+    if !path.exists() {
+        app_log!("Stream error: File not found: {}", path_str);
+        return Err(StatusCode::NOT_FOUND);
+    }
+    if !path.is_file() {
+        app_log!("Stream error: Not a file: {}", path_str);
         return Err(StatusCode::NOT_FOUND);
     }
 
@@ -156,8 +266,17 @@ async fn stream_file(
         let audio_idx = params.audio_track.unwrap_or(0);
         let start_time = params.ss.unwrap_or(0.0);
         
-        let ffmpeg_path = get_sidecar_path(&state.handle, "ffmpeg")
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        app_log!("Transcoding requested for: {} (audio_track: {}, start: {})", path_str, audio_idx, start_time);
+        
+        let ffmpeg_path = match get_sidecar_path(&state.handle, "ffmpeg") {
+            Ok(p) => p,
+            Err(e) => {
+                app_log!("ERROR: ffmpeg not found: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
+        
+        app_log!("Using ffmpeg: {:?}", ffmpeg_path);
         
         let mut cmd = Command::new(&ffmpeg_path);
         
@@ -168,7 +287,7 @@ async fn stream_file(
 
         cmd.arg("-y")
            .arg("-hide_banner")
-           .arg("-loglevel").arg("error");
+           .arg("-loglevel").arg("info");
 
         if start_time > 0.0 {
             cmd.arg("-ss").arg(start_time.to_string());
@@ -192,17 +311,45 @@ async fn stream_file(
            .arg("pipe:1");
 
         cmd.stdout(Stdio::piped())
-           .stderr(Stdio::null()); // Silencing stderr for production performance
+           .stderr(Stdio::piped());
 
         let mut child = cmd.spawn()
             .map_err(|e| {
-                eprintln!("Failed to spawn FFmpeg: {}", e);
+                app_log!("ERROR: Failed to spawn FFmpeg: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
+        app_log!("FFmpeg process spawned with PID: {:?}", child.id());
+
         let stdout = child.stdout.take().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        let stderr = child.stderr.take();
+        
+        // Handle stderr in a separate task
+        if let Some(s) = stderr {
+            tauri::async_runtime::spawn(async move {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let mut reader = BufReader::new(s).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if !line.trim().is_empty() {
+                        app_log!("FFmpeg: {}", line);
+                    }
+                }
+            });
+        }
+
+        // Wait for child to exit in a separate task to keep it alive
+        // and log the exit status.
+        tauri::async_runtime::spawn(async move {
+            match child.wait().await {
+                Ok(status) => app_log!("FFmpeg process exited with status: {:?}", status),
+                Err(e) => app_log!("FFmpeg process wait error: {}", e),
+            }
+        });
+
         let stream = ReaderStream::new(stdout);
         let body = Body::from_stream(stream);
+
+        app_log!("Returning transcoding response for: {}", path_str);
 
         return Response::builder()
             .header(header::CONTENT_TYPE, "video/mp4")
@@ -305,7 +452,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_streaming_url, get_media_info])
+        .invoke_handler(tauri::generate_handler![get_streaming_url, get_media_info, get_logs, clear_logs])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
