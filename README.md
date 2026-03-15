@@ -1,11 +1,18 @@
 # DivePlay
 
 A browser-based media player that lives in your folders and works with your local files.
-One single HTML file. Put it anywhere.
+Available in two versions: a portable **Web Player** and a powerful **Desktop App**.
 
 ![DivePlay Welcome Screen](public/welcomescreen.png)
 
-> ⚠️ **Note:** Some media files may not play because they require codecs not supported natively by the browser (e.g. AC3, DTS audio, or certain video formats). See [Limitations](#limitations) below.
+## 🚀 Two Ways to Play
+
+| Version | Description | Best For |
+|---------|-------------|----------|
+| **Web (HTML)** | A single, portable HTML file. No installation required. | Basic H.264/AAC files, portability. |
+| **Desktop (Tauri)** | Full application with integrated **FFmpeg** codecs. | MKV, HEVC, AC3, DTS, and high-bitrate files. |
+
+> 💡 **Desktop Advantage:** The Desktop version automatically transcodes unsupported codecs (like AC3 audio or HEVC video) on-the-fly, allowing you to play almost any media file without manual conversion.
 
 ## Download
 
@@ -16,7 +23,8 @@ Get the latest release from [GitHub Releases](https://github.com/dougmb/diveplay
 - 📁 **Auto-playlist** — scans the entire selected folder and builds a playlist with all media files automatically
 - 🔁 **Playback modes** — Sequential, Shuffle, or Loop All
 - ⏱️ **Resume where you left off** — progress, volume and current file are saved and restored on next open
-- 🎬 Subtitle support (SRT, VTT, SUB)
+- 🎬 **Subtitle support** (SRT, VTT, SUB)
+- ⚙️ **On-the-fly Transcoding** (Desktop version) — plays MKV, HEVC, AC3, DTS etc.
 - ⌨️ Keyboard shortcuts (Space, arrows, F, M)
 - 📴 Works fully offline — no internet required
 
