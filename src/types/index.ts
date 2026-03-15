@@ -46,7 +46,7 @@ export interface MediaStream {
     index: number;
     codec_type: string;
     codec_name: string;
-    tags?: Record<string, any>;
+    tags?: Record<string, string>;
 }
 
 export interface MediaFormat {

@@ -2,7 +2,8 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { usePlayer } from '../store/playerStore';
 import { ensurePlayable, getMediaInfo } from '../services/codecService';
-import { getTauriAPI, isTauri } from '../services/tauri';
+import { getTauriAPI } from '../services/tauri';
+import { capabilities } from '../platform/capabilities';
 import type { MediaInfo } from '../types';
 
 export default function Player() {
@@ -36,6 +37,7 @@ export default function Player() {
                 player.setDuration(dur);
             }
         }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mediaInfo]);
 
     // Clear media error when file changes
@@ -54,7 +56,7 @@ export default function Player() {
 
         if (code) {
             console.error('Media error code:', code, 'Source:', el.src);
-            if (isTauri()) {
+            if (capabilities.hasNativeLogs) {
                 setMediaError(
                     'Failed to play this file. This usually happens if FFmpeg transcoding failed ' +
                     'or if the file is not accessible. Check the logs for details.'
@@ -81,7 +83,7 @@ export default function Player() {
         (async () => {
             try {
                 let info: MediaInfo | null = null;
-                if (isTauri() && currentFile.nativePath) {
+                if (capabilities.canTranscode && currentFile.nativePath) {
                     info = await getMediaInfo(currentFile.nativePath);
                     if (!cancelled) setMediaInfo(info);
                 }
@@ -96,7 +98,7 @@ export default function Player() {
                 // Also transcode if it's an MKV, as browsers have spotty support for MKV containers with certain streams
                 const isMKV = currentFile.name.toLowerCase().endsWith('.mkv');
                 
-                const shouldTranscode = isTauri() && (isHEVC || isUnsupportedAudio || isMKV);
+                const shouldTranscode = capabilities.canTranscode && (isHEVC || isUnsupportedAudio || isMKV);
 
                 const { url } = await ensurePlayable(currentFile, {
                     transcode: shouldTranscode,
@@ -360,7 +362,7 @@ export default function Player() {
             ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(s.codec_name.toLowerCase())
         );
         const isMKV = currentFile?.name.toLowerCase().endsWith('.mkv');
-        const shouldTranscode = isTauri() && (isHEVC || isUnsupportedAudio || isMKV);
+        const shouldTranscode = capabilities.canTranscode && (isHEVC || isUnsupportedAudio || isMKV);
 
         if (shouldTranscode) {
             // Stop current playback and clear source to prevent buffer loops
@@ -658,7 +660,7 @@ export default function Player() {
                     </button>
 
                     {/* Track Selection Menu Trigger */}
-                    {isTauri() && audioStreams.length > 0 && (
+                    {capabilities.supportsAudioTracks && audioStreams.length > 0 && (
                         <div className="relative">
                             <button
                                 onClick={() => setShowTrackMenu(!showTrackMenu)}

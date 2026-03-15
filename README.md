@@ -84,18 +84,23 @@ Output in `dist/`.
 
 ### Codec Support
 
-DivePlay relies entirely on the browser's built-in media decoders. **Some files may fail to play** if they use codecs that are not natively supported:
+DivePlay's compatibility depends on whether you are using the Web version (limited by browser decoders) or the Desktop App (enhanced by FFmpeg):
 
-| Format | Status | Notes |
-|--------|--------|-------|
-| H.264 / AAC | ✅ Works | Most common video/audio |
-| H.265 / HEVC | ⚠️ Partial | Supported only in some Chromium builds |
-| AC3 / Dolby Digital | ❌ May not work | Not supported natively in most browsers |
-| DTS audio | ❌ May not work | Not supported natively in most browsers |
-| VP9 / Opus | ✅ Works | Open formats, well supported |
-| AV1 | ✅ Works | Modern open format |
+| Format / Codec | Web (HTML) | Desktop (App) | Notes |
+|----------------|------------|---------------|-------|
+| **H.264 / AAC** | ✅ Works | ✅ Works | Universal compatibility |
+| **H.265 / HEVC** | ⚠️ Partial | ✅ Works | App transcodes to H.264 on-the-fly |
+| **AC3 / EAC3** | ❌ No | ✅ Works | App transcodes to AAC on-the-fly |
+| **DTS / TrueHD** | ❌ No | ✅ Works | App transcodes to AAC on-the-fly |
+| **MKV Container**| ⚠️ Spotty | ✅ Works | App handles MKV via streaming |
+| **VP9 / Opus** | ✅ Works | ✅ Works | Well supported in modern browsers |
+| **AV1** | ✅ Works | ✅ Works | Modern open format |
 
-If a file does not play, try re-encoding the audio/video track to a format supported by your browser (e.g. AAC audio, H.264 video).
+## ❤️ Credits & Acknowledgments
+
+DivePlay's Desktop version is powered by the incredible **[FFmpeg](https://ffmpeg.org/)** project. 
+
+Special thanks to the FFmpeg team for providing the "Swiss Army knife" of multimedia handling, which allows DivePlay to transcode and stream complex formats seamlessly. We also utilize the **[Tauri](https://tauri.app/)** framework to bridge the gap between web technologies and native performance.
 
 ## License
 
