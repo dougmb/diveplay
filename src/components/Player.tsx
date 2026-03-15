@@ -281,6 +281,12 @@ export default function Player() {
         // If we are transcoding, the actual position is the seek offset + current video time
         const actualPosition = transcodeSeekTime + el.currentTime;
         player.setPosition(actualPosition);
+
+        // Auto-advance if we're at the end (for streams that don't trigger onEnded)
+        if (duration > 0 && actualPosition >= duration - 0.5 && !isEndedRef.current) {
+            isEndedRef.current = true;
+            player.next();
+        }
     };
 
     const handleLoadedMetadata = () => {
@@ -439,7 +445,7 @@ export default function Player() {
                 {isVideo ? (
                     <>
                         <video
-                            key={`${currentFile.nativePath || currentFile.relativePath}-${selectedAudioTrack}-${transcodeSeekTime}`}
+                            key={`${currentFile.nativePath || currentFile.relativePath}-${selectedAudioTrack}`}
                             ref={mediaRef as React.RefObject<HTMLVideoElement>}
                             src={blobUrl || ''}
                             className={`w-full h-full ${aspectRatioClass}`}
