@@ -35,6 +35,7 @@ export interface PlayerStoreActions {
     toggleLoop: () => void;
     toggleSubtitles: () => void;
     setSubtitleFontSize: (size: number) => void;
+    setSubtitleOffset: (offset: number) => void;
     reset: () => void;
 }
 
@@ -46,6 +47,7 @@ export const defaultSettings: Settings = {
     subtitles: {
         enabled: true,
         fontSize: 18,
+        offset: 0,
     },
     aspectRatio: 'auto',
 };

@@ -10,6 +10,7 @@ export interface MediaFile {
 export interface SubtitleSettings {
     enabled: boolean;
     fontSize: number;
+    offset: number; // in seconds
 }
 
 export type AspectRatio = 'auto' | 'contain' | 'cover' | 'fill' | '16/9' | '4/3';

@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on tags like v1.0.0
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write # Required to create and edit releases
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      # The tauri-action will automatically run 'npm run build' (from tauri.conf.json beforeBuildCommand),
+      # compile the Rust app into a Windows installer, and create the GitHub Release.
+      - name: Build and Release Desktop App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'DivePlay ${{ github.ref_name }}'
+          releaseBody: 'Download the Desktop App installer or the portable standalone Web player below.'
+          releaseDraft: false
+          prerelease: false
+
+      # After Tauri builds, dist/index.html is fresh. Rename it to make it clear what it is.
+      - name: Prepare Web Version
+        run: Copy-Item -Path dist\index.html -Destination dist\diveplay-web.html
+        shell: powershell
+
+      # Upload the renamed HTML file to the same Release created by tauri-action.
+      - name: Upload Web HTML to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/diveplay-web.html
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
