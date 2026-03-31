@@ -342,6 +342,10 @@ export default function Player() {
     };
 
     const handlePause = () => {
+        // Ignore the spurious 'pause' DOM event that fires when src changes to ''
+        // during a file transition (blobUrl cleanup). Without this guard, the pause
+        // event resets isPlaying:false and creates a play/pause loop on rescan/drop.
+        if (!blobUrl) return;
         if (!isEndedRef.current) {
             player.setIsPlaying(false);
         }
