@@ -103,6 +103,21 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
                 </ul>
             </div>
 
+            <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 text-sm text-zinc-400 space-y-2 w-full max-w-sm">
+                <p><span className="text-green-400 font-medium">Browser-supported formats:</span></p>
+                <div className="flex gap-4 text-xs">
+                    <div>
+                        <p className="text-zinc-500 mb-1">Video</p>
+                        <p>.mp4 · .webm</p>
+                    </div>
+                    <div>
+                        <p className="text-zinc-500 mb-1">Audio</p>
+                        <p>.mp3 · .aac · .flac · .wav · .ogg · .m4a</p>
+                    </div>
+                </div>
+                <p className="text-xs text-zinc-600">Other formats (.mkv, .avi, .mov) may not play — unsupported files are skipped automatically.</p>
+            </div>
+
             <div className="flex gap-3">
                 <button
                     onClick={() => setShowSettings(true)}
