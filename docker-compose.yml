@@ -1,0 +1,6 @@
+services:
+  diveplay:
+    build: .
+    ports:
+      - "40001:80"
+    restart: unless-stopped
