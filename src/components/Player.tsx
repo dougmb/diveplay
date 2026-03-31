@@ -22,6 +22,7 @@ export default function Player() {
     const [showTrackMenu, setShowTrackMenu] = useState(false);
     const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
     const [transcodeSeekTime, setTranscodeSeekTime] = useState<number>(0);
+    const [skipCountdown, setSkipCountdown] = useState<number | null>(null);
     
     const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const containerRef = useRef<HTMLDivElement | null>(null);
@@ -41,14 +42,26 @@ export default function Player() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mediaInfo]);
 
-    // Clear media error when file changes
-    useEffect(() => { 
-        setMediaError(null); 
+    // Clear media error and skip countdown when file changes
+    useEffect(() => {
+        setMediaError(null);
         setMediaInfo(null);
         setSelectedAudioTrack(0);
         setShowTrackMenu(false);
         setTranscodeSeekTime(0);
+        setSkipCountdown(null);
     }, [currentFile]);
+
+    // Auto-skip countdown on media error
+    useEffect(() => {
+        if (skipCountdown === null) return;
+        if (skipCountdown === 0) {
+            player.next();
+            return;
+        }
+        const timer = setTimeout(() => setSkipCountdown(c => c !== null ? c - 1 : null), 1000);
+        return () => clearTimeout(timer);
+    }, [skipCountdown, player]);
 
     // Called when the browser can't decode the file
     const handleMediaError = useCallback((e: React.SyntheticEvent<HTMLMediaElement>) => {
@@ -59,15 +72,14 @@ export default function Player() {
             console.error('Media error code:', code, 'Source:', el.src);
             if (capabilities.hasNativeLogs) {
                 setMediaError(
-                    'Failed to play this file. This usually happens if FFmpeg transcoding failed ' +
-                    'or if the file is not accessible. Check the logs for details.'
+                    'Failed to play this file. FFmpeg transcoding may have failed or the file is inaccessible.'
                 );
             } else {
                 setMediaError(
-                    'This codec or container (e.g. MKV, HEVC, AC3) is not supported by your browser directly. ' +
-                    'Use the desktop version for full compatibility.'
+                    'Format not supported by your browser. Supported: .mp4, .webm (video) · .mp3, .aac, .flac, .wav, .ogg, .m4a (audio).'
                 );
             }
+            setSkipCountdown(8);
         }
     }, []);
 
@@ -477,14 +489,6 @@ export default function Player() {
                                 />
                             ))}
                         </video>
-                        {mediaError && (
-                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 pointer-events-none">
-                                <svg className="w-10 h-10 text-amber-500/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
-                                </svg>
-                                <p className="text-sm text-zinc-300 text-center max-w-sm">{mediaError}</p>
-                            </div>
-                        )}
                     </>
                 ) : (
                     <>
@@ -506,6 +510,27 @@ export default function Player() {
                     </>
                 )}
             </div>
+
+            {/* Unsupported file error overlay */}
+            {mediaError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 z-20">
+                    <svg className="w-10 h-10 text-amber-500/70" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                    </svg>
+                    <p className="text-sm text-zinc-300 text-center max-w-sm">{mediaError}</p>
+                    <div className="flex flex-col items-center gap-2">
+                        <button
+                            onClick={(e) => { e.stopPropagation(); player.next(); }}
+                            className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white text-sm rounded-lg transition-colors cursor-pointer"
+                        >
+                            Skip now
+                        </button>
+                        {skipCountdown !== null && (
+                            <p className="text-xs text-zinc-500">Skipping in {skipCountdown}s...</p>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Controls overlay */}
             <div
