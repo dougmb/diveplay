@@ -10,6 +10,7 @@ import type { PlayerStoreState } from './store/playerStore';
 import { readState, writeState } from './services/fileSystem';
 import { clearHandle } from './services/db';
 import type { MediaFile, PlayerState, AspectRatio } from './types';
+import { isTauri, getTauriAPI } from './services/tauri';
 
 function isFullSupportBrowser(): boolean {
   return 'showDirectoryPicker' in window;
@@ -202,6 +203,101 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Tauri native file drop handler (uses native OS paths instead of File System Access API)
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let unlisten: (() => void) | null = null;
+
+    const setup = async () => {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+
+      unlisten = await getCurrentWindow().onDragDropEvent(async (event) => {
+        const payload = event.payload;
+
+        if (payload.type === 'enter' || payload.type === 'over') {
+          setIsDragging(true);
+          return;
+        }
+
+        if (payload.type === 'leave') {
+          setIsDragging(false);
+          return;
+        }
+
+        if (payload.type === 'drop') {
+          setIsDragging(false);
+          const paths = (payload as { type: 'drop'; paths: string[] }).paths;
+          if (!paths || paths.length === 0) return;
+
+          const { loadPreferences } = await import('./services/db');
+          const { DEFAULT_FILE_TYPES } = await import('./types');
+          const { scanDirectory } = await import('./services/fileSystem');
+          const { getExtension } = await import('./services/core/utils');
+
+          const storedPrefs = await loadPreferences();
+          const prefs = storedPrefs ?? DEFAULT_FILE_TYPES;
+          const videoExts = new Set(prefs.video);
+          const audioExts = new Set(prefs.audio);
+
+          const collectedFiles: MediaFile[] = [];
+          let firstDir: string | null = null;
+
+          const api = await getTauriAPI();
+          if (!api) return;
+
+          for (const path of paths) {
+            try {
+              const info = await api.stat(path);
+              if (info.isDirectory) {
+                if (!firstDir) firstDir = path;
+                const files = await scanDirectory(path, prefs);
+                collectedFiles.push(...files);
+              } else {
+                const name = path.split(/[\\/]/).pop() || path;
+                const ext = getExtension(name);
+                if (ext && (videoExts.has(ext) || audioExts.has(ext))) {
+                  collectedFiles.push({
+                    name,
+                    relativePath: name,
+                    nativePath: path,
+                    type: videoExts.has(ext) ? 'video' : 'audio',
+                    subtitleHandles: [],
+                  });
+                }
+              }
+            } catch (err) {
+              console.error('Failed to process dropped path:', path, err);
+            }
+          }
+
+          if (collectedFiles.length > 0) {
+            await saveCurrentState();
+            collectedFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+            setState((s) => ({
+              ...s,
+              dirHandle: firstDir || s.dirHandle,
+              playlist: collectedFiles,
+              currentFile: collectedFiles[0],
+              currentIndex: 0,
+              isPlaying: true,
+              position: 0,
+              duration: 0,
+            }));
+            setShowResumeDialog(false);
+            setSavedState(null);
+          }
+        }
+      });
+    };
+
+    setup().catch(console.error);
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [saveCurrentState]);
+
   // ── Other actions ──
 
   const setPlaylist = useCallback((files: MediaFile[]) => {
@@ -386,6 +482,8 @@ function App() {
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // Only reset if the mouse actually left the container (not just moved to a child element)
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
     setIsDragging(false);
   };
 
@@ -393,6 +491,9 @@ function App() {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
+
+    // Tauri uses onDragDropEvent (native paths); skip browser drop handling there
+    if (isTauri()) return;
 
     const items = e.dataTransfer.items;
     if (!items || items.length === 0) return;
