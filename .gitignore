@@ -11,6 +11,9 @@ node_modules
 dist-ssr
 *.local
 
+# Local documentation
+WORKFLOW.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
