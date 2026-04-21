@@ -12,6 +12,7 @@ interface FolderPickerProps {
 
 export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
     const [loading, setLoading] = useState(true);
+    const [scanning, setScanning] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [showSettings, setShowSettings] = useState(false);
     const [prefs, setPrefs] = useState<FileTypePreferences>(DEFAULT_FILE_TYPES);
@@ -46,6 +47,7 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
         setError(null);
         try {
             const handle = await pickFolder();
+            setScanning(true);
             const files = await scanDirectory(handle, prefs);
             await saveHandle(handle);
             onFolderReady(handle, files);
@@ -55,6 +57,8 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
             }
             setError('Could not access the folder. Please try again.');
             console.error(err);
+        } finally {
+            setScanning(false);
         }
     };
 
@@ -121,15 +125,22 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
             <div className="flex gap-3">
                 <button
                     onClick={() => setShowSettings(true)}
-                    className="px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-medium transition-colors cursor-pointer"
+                    disabled={scanning}
+                    className="px-4 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     Settings
                 </button>
                 <button
                     onClick={handlePickFolder}
-                    className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-lg font-medium transition-colors cursor-pointer shadow-lg shadow-indigo-500/20"
+                    disabled={scanning}
+                    className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-lg font-medium transition-colors cursor-pointer shadow-lg shadow-indigo-500/20 disabled:opacity-70 disabled:cursor-not-allowed flex items-center gap-2"
                 >
-                    Open Folder
+                    {scanning ? (
+                        <>
+                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            Scanning…
+                        </>
+                    ) : 'Open Folder'}
                 </button>
             </div>
 

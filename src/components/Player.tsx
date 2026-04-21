@@ -28,6 +28,9 @@ export default function Player() {
     const containerRef = useRef<HTMLDivElement | null>(null);
     const progressRef = useRef<HTMLDivElement | null>(null);
     const isEndedRef = useRef(false);
+    // True while a file is loading (between effect start and loadedmetadata) — suppresses
+    // spurious 'pause' DOM events that fire during src transitions.
+    const isLoadingRef = useRef(false);
 
     const { currentFile, isPlaying, settings, duration, position } = player;
 
@@ -50,6 +53,9 @@ export default function Player() {
         setShowTrackMenu(false);
         setTranscodeSeekTime(0);
         setSkipCountdown(null);
+        setHasAudioTrack(true);
+        setShowNoAudioAlert(false);
+        isEndedRef.current = false;
     }, [currentFile]);
 
     // Auto-skip countdown on media error
@@ -86,10 +92,12 @@ export default function Player() {
     // Load file
     useEffect(() => {
         let cancelled = false;
+        isLoadingRef.current = true;
 
         if (!currentFile) {
             setBlobUrl(null);
             setSubtitleTracks([]);
+            isLoadingRef.current = false;
             return;
         }
 
@@ -165,6 +173,7 @@ export default function Player() {
 
         return () => {
             cancelled = true;
+            isLoadingRef.current = false;
             setBlobUrl((prev) => {
                 if (prev) URL.revokeObjectURL(prev);
                 return null;
@@ -178,8 +187,11 @@ export default function Player() {
         const el = mediaRef.current;
         if (!el || !blobUrl) return;
         if (isPlaying) {
-            el.play().catch(() => {
-                player.setIsPlaying(false);
+            el.play().catch((err: unknown) => {
+                // AbortError = play() interrupted by a new load — loadedmetadata will retry
+                if (err instanceof DOMException && err.name !== 'AbortError') {
+                    player.setIsPlaying(false);
+                }
             });
         } else {
             el.pause();
@@ -305,9 +317,10 @@ export default function Player() {
     };
 
     const handleLoadedMetadata = () => {
+        isLoadingRef.current = false;
         const el = mediaRef.current;
         if (!el) return;
-        
+
         // Use mediaInfo duration if available
         if (mediaInfo?.format.duration) {
             const dur = parseFloat(mediaInfo.format.duration);
@@ -328,22 +341,35 @@ export default function Player() {
         el.volume = settings.volume;
         el.playbackRate = settings.playbackRate;
 
-        // Simple audio track check
-        const audioTracks = (el as HTMLMediaElement & { audioTracks?: { length: number } }).audioTracks;
-        if (audioTracks && audioTracks.length > 0) {
-            setHasAudioTrack(true);
-            setShowNoAudioAlert(false);
-        } else if (audioTracks !== undefined) {
-            setHasAudioTrack(false);
-            setShowNoAudioAlert(true);
+        // Audio track detection — prefer mediaInfo (Tauri) over the audioTracks API
+        // because Chrome/Edge don't expose audioTracks on HTMLMediaElement.
+        if (mediaInfo) {
+            const audioStreams = mediaInfo.streams.filter(s => s.codec_type === 'audio');
+            const hasAudio = audioStreams.length > 0;
+            setHasAudioTrack(hasAudio);
+            if (!hasAudio && mediaInfo.streams.some(s => s.codec_type === 'video')) {
+                setShowNoAudioAlert(true);
+            }
+        } else {
+            // Fallback for web mode — audioTracks is supported in Firefox but not Chrome
+            const audioTracks = (el as HTMLMediaElement & { audioTracks?: { length: number } }).audioTracks;
+            if (audioTracks && audioTracks.length > 0) {
+                setHasAudioTrack(true);
+                setShowNoAudioAlert(false);
+            } else if (audioTracks !== undefined) {
+                setHasAudioTrack(false);
+                setShowNoAudioAlert(true);
+            }
         }
 
         if (position > 0) {
             el.currentTime = Math.max(0, position - transcodeSeekTime);
         }
         if (isPlaying) {
-            el.play().catch(() => {
-                player.setIsPlaying(false);
+            el.play().catch((err: unknown) => {
+                if (err instanceof DOMException && err.name !== 'AbortError') {
+                    player.setIsPlaying(false);
+                }
             });
         }
     };
@@ -354,10 +380,10 @@ export default function Player() {
     };
 
     const handlePause = () => {
-        // Ignore the spurious 'pause' DOM event that fires when src changes to ''
-        // during a file transition (blobUrl cleanup). Without this guard, the pause
-        // event resets isPlaying:false and creates a play/pause loop on rescan/drop.
-        if (!blobUrl) return;
+        // Ignore spurious 'pause' DOM events during file transitions:
+        // 1. blobUrl=null  → src just cleared during cleanup
+        // 2. isLoadingRef  → file is still loading (metadata not yet received)
+        if (!blobUrl || isLoadingRef.current) return;
         if (!isEndedRef.current) {
             player.setIsPlaying(false);
         }
@@ -382,13 +408,15 @@ export default function Player() {
         const shouldTranscode = capabilities.canTranscode && (isHEVC || isUnsupportedAudio || isMKV);
 
         if (shouldTranscode) {
+            // Mark as loading before pausing so handlePause ignores the transition event
+            isLoadingRef.current = true;
             // Stop current playback and clear source to prevent buffer loops
             if (el) {
                 el.pause();
                 el.src = '';
                 el.load();
             }
-            
+
             player.setPosition(newTime);
             setTranscodeSeekTime(newTime);
         } else {
@@ -424,13 +452,13 @@ export default function Player() {
     const isVideo = currentFile.type === 'video';
 
     const aspectRatioClass = {
-        'auto': 'object-contain',
-        'contain': 'object-contain',
-        'cover': 'object-cover',
-        'fill': 'object-fill',
-        '16/9': 'aspect-video w-auto h-full',
-        '4/3': 'aspect-[4/3] w-auto h-full',
-    }[settings.aspectRatio] || 'object-contain';
+        'auto':    'w-full h-full object-contain',
+        'contain': 'w-full h-full object-contain',
+        'cover':   'w-full h-full object-cover',
+        'fill':    'w-full h-full object-fill',
+        '16/9':    'h-full w-auto max-w-full aspect-video object-fill',
+        '4/3':     'h-full w-auto max-w-full aspect-[4/3] object-fill',
+    }[settings.aspectRatio] ?? 'w-full h-full object-contain';
 
     const cycleAspectRatio = () => {
         const ratios: Array<'auto' | 'contain' | 'cover' | 'fill' | '16/9' | '4/3'> = ['auto', 'contain', 'cover', 'fill', '16/9', '4/3'];
@@ -471,7 +499,7 @@ export default function Player() {
                             key={`${currentFile.nativePath || currentFile.relativePath}-${selectedAudioTrack}`}
                             ref={mediaRef as React.RefObject<HTMLVideoElement>}
                             src={blobUrl || ''}
-                            className={`w-full h-full ${aspectRatioClass}`}
+                            className={aspectRatioClass}
                             onTimeUpdate={handleTimeUpdate}
                             onLoadedMetadata={handleLoadedMetadata}
                             onEnded={handleEnded}

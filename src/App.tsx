@@ -25,6 +25,7 @@ function App() {
   const [showToggle, setShowToggle] = useState(true);
   const [showLogs, setShowLogs] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
 
   // Ref to always have the latest state for beforeunload / throttled writes
   const stateRef = useRef(state);
@@ -246,6 +247,8 @@ function App() {
           const api = await getTauriAPI();
           if (!api) return;
 
+          setIsScanning(true);
+          try {
           for (const path of paths) {
             try {
               const info = await api.stat(path);
@@ -269,6 +272,9 @@ function App() {
             } catch (err) {
               console.error('Failed to process dropped path:', path, err);
             }
+          }
+          } finally {
+            setIsScanning(false);
           }
 
           if (collectedFiles.length > 0) {
@@ -511,6 +517,7 @@ function App() {
     const collectedFiles: MediaFile[] = [];
     let firstDirHandle: FileSystemDirectoryHandle | null = null;
 
+    setIsScanning(true);
     try {
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
@@ -559,6 +566,8 @@ function App() {
       }
     } catch (err) {
       console.error('Drop failed:', err);
+    } finally {
+      setIsScanning(false);
     }
   };
 
@@ -592,25 +601,37 @@ function App() {
           onDrop={handleDrop}
         >
           <FallbackPicker onFilesSelected={handleFallbackFiles} />
-          {isDragging && (
+          {isDragging && !isScanning && (
             <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
               <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
+            </div>
+          )}
+          {isScanning && (
+            <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-50 pointer-events-none gap-4">
+              <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <p className="text-lg font-medium text-zinc-200">Scanning folder…</p>
             </div>
           )}
         </div>
       );
     }
     return (
-      <div 
+      <div
         className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center relative"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
         <FolderPicker onFolderReady={handleFolderReady} />
-        {isDragging && (
+        {isDragging && !isScanning && (
           <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
             <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
+          </div>
+        )}
+        {isScanning && (
+          <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-50 pointer-events-none gap-4">
+            <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <p className="text-lg font-medium text-zinc-200">Scanning folder…</p>
           </div>
         )}
       </div>
@@ -620,15 +641,21 @@ function App() {
   // Folder selected — show sidebar + player area
   return (
     <PlayerContext.Provider value={contextValue}>
-      <div 
+      <div
         className="min-h-screen h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden relative"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {isDragging && (
+        {isDragging && !isScanning && (
           <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
             <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
+          </div>
+        )}
+        {isScanning && (
+          <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-50 pointer-events-none gap-4">
+            <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <p className="text-lg font-medium text-zinc-200">Scanning folder…</p>
           </div>
         )}
         {/* Sidebar */}
