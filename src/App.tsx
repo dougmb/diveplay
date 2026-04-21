@@ -425,11 +425,16 @@ function App() {
     // don't abort the whole folder-open flow
     try {
       const saved = await readState(handle);
-      if (saved && saved.lastFile) {
-        const fileExists = mediaFiles.some((f) => f.relativePath === saved.lastFile);
-        if (fileExists) {
-          setSavedState(saved);
-          setShowResumeDialog(true);
+      if (saved) {
+        if (saved.settings) {
+          setState((s) => ({ ...s, settings: { ...s.settings, ...saved.settings } }));
+        }
+        if (saved.lastFile) {
+          const fileExists = mediaFiles.some((f) => f.relativePath === saved.lastFile);
+          if (fileExists) {
+            setSavedState(saved);
+            setShowResumeDialog(true);
+          }
         }
       }
     } catch (err) {
