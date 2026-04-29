@@ -9,7 +9,8 @@ import { PlayerContext, initialState } from './store/playerStore';
 import type { PlayerStoreState } from './store/playerStore';
 import { readState, writeState } from './services/fileSystem';
 import { clearHandle } from './services/db';
-import type { MediaFile, PlayerState, AspectRatio } from './types';
+import type { MediaFile, PlayerState, AspectRatio, SortOrder } from './types';
+import { sortFiles } from './utils/sortFiles';
 import { isTauri, getTauriAPI } from './services/tauri';
 
 function isFullSupportBrowser(): boolean {
@@ -150,6 +151,22 @@ function App() {
     saveCurrentState();
   }, [saveCurrentState]);
 
+  const setSortOrder = useCallback((order: SortOrder) => {
+    setState((s) => {
+      const sorted = sortFiles(s.playlist, order);
+      const newIdx = s.currentFile
+        ? sorted.findIndex(f => f.relativePath === s.currentFile!.relativePath)
+        : -1;
+      return {
+        ...s,
+        settings: { ...s.settings, sortOrder: order },
+        playlist: sorted,
+        currentIndex: newIdx,
+      };
+    });
+    saveCurrentState();
+  }, [saveCurrentState]);
+
   // Save on beforeunload
   useEffect(() => {
     const handleBeforeUnload = () => {
@@ -279,11 +296,10 @@ function App() {
 
           if (collectedFiles.length > 0) {
             await saveCurrentState();
-            collectedFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
             setState((s) => ({
               ...s,
               dirHandle: firstDir || s.dirHandle,
-              playlist: collectedFiles,
+              playlist: sortFiles(collectedFiles, s.settings.sortOrder),
               currentFile: collectedFiles[0],
               currentIndex: 0,
               isPlaying: true,
@@ -407,38 +423,42 @@ function App() {
     toggleSubtitles,
     setSubtitleFontSize,
     setSubtitleOffset,
+    setSortOrder,
     reset,
-  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, setAspectRatio, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, setSubtitleOffset, reset]);
+  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, setAspectRatio, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, setSubtitleOffset, setSortOrder, reset]);
 
   // ── Folder ready handler: read saved state ──
 
   const handleFolderReady = async (handle: FileSystemDirectoryHandle | string, mediaFiles: MediaFile[]) => {
-    setState((s) => ({
-      ...s,
-      dirHandle: handle,
-      playlist: mediaFiles,
-      currentFile: null,
-      currentIndex: -1,
-    }));
+    let mergedSettings = { ...stateRef.current.settings };
+    let saved: PlayerState | null = null;
 
-    // Check for saved state — explicitly catch permission/I/O errors so they
-    // don't abort the whole folder-open flow
     try {
-      const saved = await readState(handle);
-      if (saved) {
-        if (saved.settings) {
-          setState((s) => ({ ...s, settings: { ...s.settings, ...saved.settings } }));
-        }
-        if (saved.lastFile) {
-          const fileExists = mediaFiles.some((f) => f.relativePath === saved.lastFile);
-          if (fileExists) {
-            setSavedState(saved);
-            setShowResumeDialog(true);
-          }
-        }
+      saved = await readState(handle);
+      if (saved?.settings) {
+        mergedSettings = { ...mergedSettings, ...saved.settings };
       }
     } catch (err) {
       console.warn('Could not read saved state:', err);
+    }
+
+    const sorted = sortFiles(mediaFiles, mergedSettings.sortOrder);
+
+    setState((s) => ({
+      ...s,
+      dirHandle: handle,
+      playlist: sorted,
+      currentFile: null,
+      currentIndex: -1,
+      settings: mergedSettings,
+    }));
+
+    if (saved?.lastFile) {
+      const fileExists = sorted.some((f) => f.relativePath === saved!.lastFile);
+      if (fileExists) {
+        setSavedState(saved);
+        setShowResumeDialog(true);
+      }
     }
   };
 
@@ -447,7 +467,7 @@ function App() {
     setState((s) => ({
       ...s,
       dirHandle: null,
-      playlist: mediaFiles,
+      playlist: sortFiles(mediaFiles, s.settings.sortOrder),
       currentFile: null,
       currentIndex: -1,
     }));
@@ -552,13 +572,10 @@ function App() {
         // Clear previous state and load the new dropped set
         await saveCurrentState();
         
-        // Sort files by name/path
-        collectedFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-
         setState((s) => ({
           ...s,
-          dirHandle: firstDirHandle || s.dirHandle, // Keep old handle if only files were dropped
-          playlist: collectedFiles,
+          dirHandle: firstDirHandle || s.dirHandle,
+          playlist: sortFiles(collectedFiles, s.settings.sortOrder),
           currentFile: collectedFiles[0],
           currentIndex: 0,
           isPlaying: true,
@@ -686,6 +703,8 @@ function App() {
             files={state.playlist}
             currentFile={state.currentFile}
             onFileSelect={play}
+            sortOrder={state.settings.sortOrder ?? 'name-asc'}
+            onSortChange={setSortOrder}
           />
         </aside>
 

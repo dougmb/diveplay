@@ -25,6 +25,7 @@ export const webFileSystem: IFileSystem = {
             type: 'video' | 'audio' | 'subtitle';
             baseName: string;
             directory: string;
+            lastModified?: number;
         }> = [];
 
         const scanDir = async (handle: FileSystemDirectoryHandle, path: string) => {
@@ -40,12 +41,16 @@ export const webFileSystem: IFileSystem = {
                     const baseName = getBaseName(entry.name);
                     const directory = getDirectory(entryPath);
 
-                    if (supportedVideo.has(ext)) {
-                        allFiles.push({ name: entry.name, path: entryPath, handle: entry as FileSystemFileHandle, type: 'video', baseName, directory });
-                    } else if (supportedAudio.has(ext)) {
-                        allFiles.push({ name: entry.name, path: entryPath, handle: entry as FileSystemFileHandle, type: 'audio', baseName, directory });
-                    } else if (subtitleExts.has(ext)) {
-                        allFiles.push({ name: entry.name, path: entryPath, handle: entry as FileSystemFileHandle, type: 'subtitle', baseName, directory });
+                    if (supportedVideo.has(ext) || supportedAudio.has(ext) || subtitleExts.has(ext)) {
+                        const fileHandle = entry as FileSystemFileHandle;
+                        let lastModified: number | undefined;
+                        try {
+                            const fileObj = await fileHandle.getFile();
+                            lastModified = fileObj.lastModified;
+                        } catch { /* non-fatal */ }
+
+                        const type = supportedVideo.has(ext) ? 'video' : supportedAudio.has(ext) ? 'audio' : 'subtitle';
+                        allFiles.push({ name: entry.name, path: entryPath, handle: fileHandle, type, baseName, directory, lastModified });
                     }
                 }
             }
@@ -71,6 +76,7 @@ export const webFileSystem: IFileSystem = {
                     handle: file.handle,
                     type: file.type,
                     subtitleHandles: subtitlesByMedia[key] || [],
+                    lastModified: file.lastModified,
                 });
             }
         }

@@ -1,3 +1,5 @@
+export type SortOrder = 'name-asc' | 'name-desc' | 'date-desc' | 'date-asc' | 'type';
+
 export interface MediaFile {
     name: string;
     relativePath: string;
@@ -5,6 +7,7 @@ export interface MediaFile {
     nativePath?: string;
     type: 'video' | 'audio';
     subtitleHandles?: Array<FileSystemFileHandle | string>;
+    lastModified?: number;
 }
 
 export interface SubtitleSettings {
@@ -22,6 +25,7 @@ export interface Settings {
     loop: boolean;
     subtitles: SubtitleSettings;
     aspectRatio: AspectRatio;
+    sortOrder?: SortOrder;
 }
 
 export interface PlayerState {

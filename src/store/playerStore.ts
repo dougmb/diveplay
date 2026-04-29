@@ -1,7 +1,7 @@
 // playerStore.ts — Global state via React Context
 
 import { createContext, useContext } from 'react';
-import type { MediaFile, Settings, AspectRatio } from '../types';
+import type { MediaFile, Settings, AspectRatio, SortOrder } from '../types';
 
 export interface PlayerStoreState {
     // Playlist
@@ -36,6 +36,7 @@ export interface PlayerStoreActions {
     toggleSubtitles: () => void;
     setSubtitleFontSize: (size: number) => void;
     setSubtitleOffset: (offset: number) => void;
+    setSortOrder: (order: SortOrder) => void;
     reset: () => void;
 }
 

@@ -38,6 +38,7 @@ export const tauriFileSystem: IFileSystem = {
             type: 'video' | 'audio' | 'subtitle';
             baseName: string;
             directory: string;
+            lastModified?: number;
         }> = [];
 
         const scanDir = async (path: string) => {
@@ -55,12 +56,15 @@ export const tauriFileSystem: IFileSystem = {
                     const baseName = getBaseName(entry.name || '');
                     const directory = getDirectory(entryPath);
 
-                    if (supportedVideo.has(ext)) {
-                        allFiles.push({ name: entry.name || '', path: entryPath, type: 'video', baseName, directory });
-                    } else if (supportedAudio.has(ext)) {
-                        allFiles.push({ name: entry.name || '', path: entryPath, type: 'audio', baseName, directory });
-                    } else if (subtitleExts.has(ext)) {
-                        allFiles.push({ name: entry.name || '', path: entryPath, type: 'subtitle', baseName, directory });
+                    if (supportedVideo.has(ext) || supportedAudio.has(ext) || subtitleExts.has(ext)) {
+                        let lastModified: number | undefined;
+                        try {
+                            const fileStat = await api.stat(entryPath);
+                            lastModified = fileStat.mtime ? fileStat.mtime.getTime() : undefined;
+                        } catch { /* non-fatal */ }
+
+                        const type = supportedVideo.has(ext) ? 'video' : supportedAudio.has(ext) ? 'audio' : 'subtitle';
+                        allFiles.push({ name: entry.name || '', path: entryPath, type, baseName, directory, lastModified });
                     }
                 }
             }
@@ -91,6 +95,7 @@ export const tauriFileSystem: IFileSystem = {
                     nativePath: file.path,
                     type: file.type,
                     subtitleHandles: subtitlesByMedia[key] || [],
+                    lastModified: file.lastModified,
                 });
             }
         }
