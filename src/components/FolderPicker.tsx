@@ -1,9 +1,9 @@
 // FolderPicker.tsx — Open folder button and permission logic
 
 import { useEffect, useState } from 'react';
-import { saveHandle, loadHandle, requestPermission, savePreferences, loadPreferences } from '../services/db';
+import { saveHandle, loadHandle, requestPermission, savePreferences, loadPreferences, loadAppSettings, saveAppSettings } from '../services/db';
 import { pickFolder, scanDirectory } from '../services/fileSystem';
-import { DEFAULT_FILE_TYPES, type FileTypePreferences, type MediaFile } from '../types';
+import { DEFAULT_FILE_TYPES, type FileTypePreferences, type MediaFile, type AppSettings } from '../types';
 import SettingsDialog from './SettingsDialog';
 
 interface FolderPickerProps {
@@ -16,6 +16,7 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
     const [error, setError] = useState<string | null>(null);
     const [showSettings, setShowSettings] = useState(false);
     const [prefs, setPrefs] = useState<FileTypePreferences>(DEFAULT_FILE_TYPES);
+    const [appSettings, setAppSettings] = useState<AppSettings>({});
 
     useEffect(() => {
         let active = true;
@@ -25,6 +26,9 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
                 const storedPrefs = await loadPreferences();
                 const effectivePrefs = storedPrefs ?? DEFAULT_FILE_TYPES;
                 if (storedPrefs && active) setPrefs(storedPrefs);
+
+                const storedAppSettings = await loadAppSettings();
+                if (storedAppSettings && active) setAppSettings(storedAppSettings);
 
                 const storedHandle = await loadHandle();
                 if (storedHandle && active) {
@@ -62,9 +66,11 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
         }
     };
 
-    const handleSavePreferences = async (newPrefs: FileTypePreferences) => {
+    const handleSavePreferences = async (newPrefs: FileTypePreferences, newAppSettings: AppSettings) => {
         setPrefs(newPrefs);
+        setAppSettings(newAppSettings);
         await savePreferences(newPrefs);
+        await saveAppSettings(newAppSettings);
     };
 
     if (loading) {
@@ -168,6 +174,7 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
             {showSettings && (
                 <SettingsDialog
                     prefs={prefs}
+                    appSettings={appSettings}
                     onSave={handleSavePreferences}
                     onClose={() => setShowSettings(false)}
                 />

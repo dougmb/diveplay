@@ -36,6 +36,8 @@ export interface PlayerStoreActions {
     toggleSubtitles: () => void;
     setSubtitleFontSize: (size: number) => void;
     setSubtitleOffset: (offset: number) => void;
+    setSubtitleColor: (color: string) => void;
+    setSubtitleBgOpacity: (opacity: number) => void;
     setSortOrder: (order: SortOrder) => void;
     reset: () => void;
 }
@@ -49,6 +51,8 @@ export const defaultSettings: Settings = {
         enabled: true,
         fontSize: 18,
         offset: 0,
+        color: '#ffffff',
+        bgOpacity: 0.75,
     },
     aspectRatio: 'auto',
 };

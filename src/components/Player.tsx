@@ -1,10 +1,19 @@
 // Player.tsx — Video/audio player with custom controls
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { usePlayer } from '../store/playerStore';
 import { ensurePlayable, getMediaInfo } from '../services/codecService';
-import { getTauriAPI } from '../services/tauri';
+import { getTauriAPI, isTauri } from '../services/tauri';
 import { capabilities } from '../platform/capabilities';
-import type { MediaInfo } from '../types';
+import { loadAppSettings } from '../services/db';
+import { parseSubtitleCues, getActiveCue, decodeSubtitleBytes } from '../utils/subtitleParser';
+import type { SubtitleCue } from '../utils/subtitleParser';
+import type { MediaInfo, AppSettings } from '../types';
+
+interface SubtitleTrack {
+    name: string;
+    cues: SubtitleCue[];
+    source: 'local' | 'url' | 'opensub';
+}
 
 export default function Player() {
     const player = usePlayer();
@@ -13,7 +22,11 @@ export default function Player() {
     const [isMuted, setIsMuted] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showControls, setShowControls] = useState(true);
-    const [subtitleTracks, setSubtitleTracks] = useState<Array<{ name: string; url: string }>>([]);
+    const [subtitleTracks, setSubtitleTracks] = useState<SubtitleTrack[]>([]);
+    const [selectedSubtitleTrack, setSelectedSubtitleTrack] = useState(0);
+    const subtitleFileInputRef = useRef<HTMLInputElement | null>(null);
+    const [isLoadingSubtitle, setIsLoadingSubtitle] = useState(false);
+    const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
     const [hasAudioTrack, setHasAudioTrack] = useState(true);
     const [showNoAudioAlert, setShowNoAudioAlert] = useState(false);
     const [mediaError, setMediaError] = useState<string | null>(null);
@@ -33,6 +46,11 @@ export default function Player() {
     const isLoadingRef = useRef(false);
 
     const { currentFile, isPlaying, settings, duration, position } = player;
+
+    // Load app settings (API keys, subtitle language) once on mount
+    useEffect(() => {
+        loadAppSettings().then(setAppSettings).catch(() => {});
+    }, []);
 
     // Sync duration from mediaInfo when it becomes available
     useEffect(() => {
@@ -55,6 +73,7 @@ export default function Player() {
         setSkipCountdown(null);
         setHasAudioTrack(true);
         setShowNoAudioAlert(false);
+        setSelectedSubtitleTrack(0);
         isEndedRef.current = false;
     }, [currentFile]);
 
@@ -109,17 +128,7 @@ export default function Player() {
                     if (!cancelled) setMediaInfo(info);
                 }
 
-                // Check if we need transcoding (HEVC/AC3/DTS/TrueHD)
-                const isHEVC = info?.streams.some(s => s.codec_name === 'hevc' || s.codec_name === 'h265');
-                const isUnsupportedAudio = info?.streams.some(s => 
-                    s.codec_type === 'audio' && 
-                    ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(s.codec_name.toLowerCase())
-                );
-                
-                // Also transcode if it's an MKV, as browsers have spotty support for MKV containers with certain streams
-                const isMKV = currentFile.name.toLowerCase().endsWith('.mkv');
-                
-                const shouldTranscode = capabilities.canTranscode && (isHEVC || isUnsupportedAudio || isMKV);
+                const shouldTranscode = capabilities.canTranscode && needsTranscoding(info, currentFile.name);
 
                 const { url } = await ensurePlayable(currentFile, {
                     transcode: shouldTranscode,
@@ -134,31 +143,30 @@ export default function Player() {
 
                 setBlobUrl(url);
 
-                // Load subtitles — use data: URLs so Chrome doesn't block blob:null on <track>
-                const tracks: Array<{ name: string; url: string }> = [];
+                // Load subtitles — parse to cues for custom renderer
+                const tracks: SubtitleTrack[] = [];
                 if (currentFile.subtitleHandles && currentFile.subtitleHandles.length > 0) {
                     const api = await getTauriAPI();
                     for (const handleOrPath of currentFile.subtitleHandles) {
                         let text = '';
                         let name = '';
-                        
+
                         if (typeof handleOrPath === 'string') {
                             if (api) {
                                 const contents = await api.readFile(handleOrPath);
-                                text = new TextDecoder().decode(contents);
+                                text = decodeSubtitleBytes(contents);
                                 const lastSlash = Math.max(handleOrPath.lastIndexOf('/'), handleOrPath.lastIndexOf('\\'));
                                 name = handleOrPath.slice(lastSlash + 1);
                             }
                         } else {
                             const subtitleFile = await handleOrPath.getFile();
-                            text = await subtitleFile.text();
+                            const buffer = await subtitleFile.arrayBuffer();
+                            text = decodeSubtitleBytes(new Uint8Array(buffer));
                             name = handleOrPath.name;
                         }
 
                         if (text) {
-                            const vtt = toVtt(text, name, settings.subtitles.offset);
-                            const url = `data:text/vtt;charset=utf-8,${encodeURIComponent(vtt)}`;
-                            tracks.push({ name, url });
+                            tracks.push({ name, cues: parseSubtitleCues(text, name), source: 'local' });
                         }
                     }
                 }
@@ -398,14 +406,7 @@ export default function Player() {
         const pct = (e.clientX - rect.left) / rect.width;
         const newTime = pct * (duration || 0);
 
-        // Check if we are currently transcoding
-        const isHEVC = mediaInfo?.streams.some(s => s.codec_name === 'hevc' || s.codec_name === 'h265');
-        const isUnsupportedAudio = mediaInfo?.streams.some(s => 
-            s.codec_type === 'audio' && 
-            ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(s.codec_name.toLowerCase())
-        );
-        const isMKV = currentFile?.name.toLowerCase().endsWith('.mkv');
-        const shouldTranscode = capabilities.canTranscode && (isHEVC || isUnsupportedAudio || isMKV);
+        const shouldTranscode = capabilities.canTranscode && needsTranscoding(mediaInfo, currentFile?.name ?? '');
 
         if (shouldTranscode) {
             // Mark as loading before pausing so handlePause ignores the transition event
@@ -424,6 +425,128 @@ export default function Player() {
             player.setPosition(newTime);
         }
     };
+
+    // Active subtitle cue — applied at query time so offset changes don't require re-parse
+    const activeCue = useMemo(() => {
+        if (!settings.subtitles.enabled || subtitleTracks.length === 0) return null;
+        const track = subtitleTracks[selectedSubtitleTrack];
+        if (!track) return null;
+        return getActiveCue(track.cues, position, settings.subtitles.offset);
+    }, [position, subtitleTracks, selectedSubtitleTrack, settings.subtitles.enabled, settings.subtitles.offset]);
+
+    // Auto-search subtitles via OpenSubtitles when a new file loads and API key is set
+    useEffect(() => {
+        if (!currentFile || !appSettings?.openSubtitlesApiKey) return;
+
+        const apiKey = appSettings.openSubtitlesApiKey;
+        const lang = appSettings.subtitleLanguage || 'en';
+        const query = cleanFilename(currentFile.name);
+        if (!query) return;
+
+        let cancelled = false;
+        setIsLoadingSubtitle(true);
+
+        (async () => {
+            try {
+                const searchRes = await fetch(
+                    `https://api.opensubtitles.com/api/v1/subtitles?query=${encodeURIComponent(query)}&languages=${lang}&per_page=3`,
+                    { headers: { 'Api-Key': apiKey, 'Content-Type': 'application/json' } }
+                );
+                if (!searchRes.ok || cancelled) return;
+
+                const searchData = await searchRes.json() as {
+                    data: Array<{ attributes: { files: Array<{ file_id: number; file_name: string }> } }>;
+                };
+                const firstResult = searchData.data?.[0];
+                const fileId = firstResult?.attributes?.files?.[0]?.file_id;
+                const fileName = firstResult?.attributes?.files?.[0]?.file_name ?? 'subtitle.srt';
+                if (!fileId || cancelled) return;
+
+                const dlRes = await fetch('https://api.opensubtitles.com/api/v1/download', {
+                    method: 'POST',
+                    headers: { 'Api-Key': apiKey, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_id: fileId }),
+                });
+                if (!dlRes.ok || cancelled) return;
+
+                const dlData = await dlRes.json() as { link: string };
+                if (!dlData.link || cancelled) return;
+
+                const subRes = await fetch(dlData.link);
+                if (!subRes.ok || cancelled) return;
+
+                const text = await subRes.text();
+                if (cancelled) return;
+
+                const cues = parseSubtitleCues(text, fileName);
+                if (cues.length > 0) {
+                    setSubtitleTracks(prev => {
+                        const filtered = prev.filter(t => t.source !== 'opensub');
+                        return [{ name: `Auto: ${fileName}`, cues, source: 'opensub' }, ...filtered];
+                    });
+                    setSelectedSubtitleTrack(0);
+                }
+            } catch (err) {
+                if (!cancelled) console.warn('OpenSubtitles search failed:', err);
+            } finally {
+                if (!cancelled) setIsLoadingSubtitle(false);
+            }
+        })();
+
+        return () => { cancelled = true; setIsLoadingSubtitle(false); };
+    }, [currentFile, appSettings]);
+
+    // Load subtitle from local file (web: file input, Tauri: native dialog)
+    const handlePickSubtitleFile = useCallback(async () => {
+        if (isTauri()) {
+            const api = await getTauriAPI();
+            if (!api) return;
+            setIsLoadingSubtitle(true);
+            try {
+                const selected = await api.open({
+                    multiple: false,
+                    filters: [{ name: 'Subtitles', extensions: ['srt', 'vtt', 'sub', 'ass', 'ssa'] }],
+                });
+                if (!selected) return;
+                const path = selected as string;
+                const contents = await api.readFile(path);
+                const text = decodeSubtitleBytes(contents);
+                const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+                const name = path.slice(lastSlash + 1);
+                const cues = parseSubtitleCues(text, name);
+                if (cues.length > 0) {
+                    setSubtitleTracks(prev => [...prev, { name, cues, source: 'url' }]);
+                    setSelectedSubtitleTrack(prev => prev); // keep selection or let user pick
+                }
+            } catch (err) {
+                console.error('Failed to load subtitle file:', err);
+            } finally {
+                setIsLoadingSubtitle(false);
+            }
+        } else {
+            subtitleFileInputRef.current?.click();
+        }
+    }, []);
+
+    const handleSubtitleFileSelected = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setIsLoadingSubtitle(true);
+        try {
+            const buffer = await file.arrayBuffer();
+            const text = decodeSubtitleBytes(new Uint8Array(buffer));
+            const cues = parseSubtitleCues(text, file.name);
+            if (cues.length > 0) {
+                setSubtitleTracks(prev => [...prev, { name: file.name, cues, source: 'url' }]);
+                setSelectedSubtitleTrack(subtitleTracks.length);
+            }
+        } catch (err) {
+            console.error('Failed to read subtitle file:', err);
+        } finally {
+            setIsLoadingSubtitle(false);
+            e.target.value = '';
+        }
+    }, [subtitleTracks.length]);
 
     const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
     const cycleSpeed = () => {
@@ -506,17 +629,7 @@ export default function Player() {
                             onPlay={() => player.setIsPlaying(true)}
                             onPause={handlePause}
                             onError={handleMediaError}
-                        >
-                            {subtitleTracks.map((track, index) => (
-                                <track
-                                    key={track.name}
-                                    kind="subtitles"
-                                    src={track.url}
-                                    label={track.name}
-                                    default={index === 0}
-                                />
-                            ))}
-                        </video>
+                        />
                     </>
                 ) : (
                     <>
@@ -557,6 +670,27 @@ export default function Player() {
                             <p className="text-xs text-zinc-500">Skipping in {skipCountdown}s...</p>
                         )}
                     </div>
+                </div>
+            )}
+
+            {/* Subtitle overlay */}
+            {settings.subtitles.enabled && activeCue && (
+                <div className="absolute bottom-20 inset-x-0 flex justify-center pointer-events-none z-5 px-8">
+                    <span
+                        style={{
+                            fontSize: `${settings.subtitles.fontSize}px`,
+                            color: settings.subtitles.color,
+                            backgroundColor: `rgba(0,0,0,${settings.subtitles.bgOpacity})`,
+                            padding: '2px 10px',
+                            borderRadius: '4px',
+                            textAlign: 'center',
+                            lineHeight: 1.4,
+                            maxWidth: '80%',
+                            display: 'inline-block',
+                            whiteSpace: 'pre-wrap',
+                        }}
+                        dangerouslySetInnerHTML={{ __html: activeCue.text }}
+                    />
                 </div>
             )}
 
@@ -638,19 +772,7 @@ export default function Player() {
                     <div className="flex items-center gap-1 group/vol">
                         {!isVideo ? (
                             <button onClick={toggleMute} className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer">
-                                {isMuted || settings.volume === 0 ? (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z" />
-                                    </svg>
-                                ) : settings.volume < 0.5 ? (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z" />
-                                    </svg>
-                                ) : (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
-                                    </svg>
-                                )}
+                                <VolumeIcon volume={settings.volume} muted={isMuted} />
                             </button>
                         ) : !hasAudioTrack ? (
                             <span className="p-1.5 text-zinc-500" title="No audio track">
@@ -661,19 +783,7 @@ export default function Player() {
                         ) : null}
                         {isVideo && hasAudioTrack && (
                             <button onClick={toggleMute} className="p-1.5 text-zinc-300 hover:text-white transition-colors cursor-pointer">
-                                {isMuted || settings.volume === 0 ? (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z" />
-                                    </svg>
-                                ) : settings.volume < 0.5 ? (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z" />
-                                    </svg>
-                                ) : (
-                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
-                                    </svg>
-                                )}
+                                <VolumeIcon volume={settings.volume} muted={isMuted} />
                             </button>
                         )}
                         {(isVideo && hasAudioTrack) && (
@@ -734,11 +844,32 @@ export default function Player() {
                         </button>
 
                         {showSubtitleMenu && (
-                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl overflow-hidden z-20">
-                                <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-800/50">
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl overflow-hidden z-20">
+                                <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-800/50 flex items-center justify-between">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Subtitle Settings</span>
+                                    {isLoadingSubtitle && (
+                                        <div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                                    )}
                                 </div>
-                                <div className="p-3 space-y-4">
+                                <div className="p-3 space-y-3 max-h-80 overflow-y-auto">
+                                    {/* Track selector */}
+                                    {subtitleTracks.length > 0 && (
+                                        <div className="space-y-1">
+                                            <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">FAIXA</span>
+                                            <div className="space-y-0.5">
+                                                {subtitleTracks.map((track, idx) => (
+                                                    <button
+                                                        key={idx}
+                                                        onClick={() => setSelectedSubtitleTrack(idx)}
+                                                        className={`w-full text-left px-2 py-1.5 rounded text-[10px] transition-colors cursor-pointer truncate ${selectedSubtitleTrack === idx ? 'bg-indigo-500/20 text-indigo-300' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'}`}
+                                                    >
+                                                        {track.name}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+
                                     {/* Sync Offset */}
                                     <div className="space-y-1.5">
                                         <div className="flex justify-between text-[10px] text-zinc-500 font-medium">
@@ -748,24 +879,9 @@ export default function Player() {
                                             </span>
                                         </div>
                                         <div className="flex items-center gap-2">
-                                            <button 
-                                                onClick={() => handleOffsetChange(-0.5)}
-                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
-                                            >
-                                                -0.5s
-                                            </button>
-                                            <button 
-                                                onClick={() => player.setSubtitleOffset(0)}
-                                                className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
-                                            >
-                                                Reset
-                                            </button>
-                                            <button 
-                                                onClick={() => handleOffsetChange(0.5)}
-                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
-                                            >
-                                                +0.5s
-                                            </button>
+                                            <button onClick={() => handleOffsetChange(-0.5)} className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer">-0.5s</button>
+                                            <button onClick={() => player.setSubtitleOffset(0)} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 rounded text-[10px] transition-colors cursor-pointer">Reset</button>
+                                            <button onClick={() => handleOffsetChange(0.5)} className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer">+0.5s</button>
                                         </div>
                                     </div>
 
@@ -775,20 +891,76 @@ export default function Player() {
                                             <span>FONT SIZE</span>
                                             <span className="text-zinc-400">{settings.subtitles.fontSize}px</span>
                                         </div>
+                                        <input
+                                            type="range"
+                                            min={12}
+                                            max={96}
+                                            step={2}
+                                            value={settings.subtitles.fontSize}
+                                            onChange={e => player.setSubtitleFontSize(parseInt(e.target.value))}
+                                            className="w-full h-1 accent-indigo-500 cursor-pointer"
+                                        />
+                                    </div>
+
+                                    {/* Text Color */}
+                                    <div className="space-y-1.5">
+                                        <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">COR DO TEXTO</span>
                                         <div className="flex items-center gap-2">
-                                            <button 
-                                                onClick={() => player.setSubtitleFontSize(Math.max(12, settings.subtitles.fontSize - 2))}
-                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
-                                            >
-                                                Smaller
-                                            </button>
-                                            <button 
-                                                onClick={() => player.setSubtitleFontSize(Math.min(32, settings.subtitles.fontSize + 2))}
-                                                className="flex-1 px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] transition-colors cursor-pointer"
-                                            >
-                                                Larger
-                                            </button>
+                                            {['#ffffff', '#ffff00', '#00ffff', '#90ee90'].map(color => (
+                                                <button
+                                                    key={color}
+                                                    onClick={() => player.setSubtitleColor(color)}
+                                                    title={color}
+                                                    className={`w-6 h-6 rounded-full border-2 transition-all cursor-pointer ${settings.subtitles.color === color ? 'border-white scale-110' : 'border-zinc-600 hover:border-zinc-400'}`}
+                                                    style={{ backgroundColor: color }}
+                                                />
+                                            ))}
+                                            <input
+                                                type="color"
+                                                value={settings.subtitles.color}
+                                                onChange={e => player.setSubtitleColor(e.target.value)}
+                                                className="w-6 h-6 rounded cursor-pointer border border-zinc-600 bg-transparent"
+                                                title="Custom color"
+                                            />
                                         </div>
+                                    </div>
+
+                                    {/* Background opacity */}
+                                    <div className="space-y-1.5">
+                                        <div className="flex justify-between text-[10px] text-zinc-500 font-medium">
+                                            <span>FUNDO</span>
+                                            <span className="text-zinc-400">{Math.round(settings.subtitles.bgOpacity * 100)}%</span>
+                                        </div>
+                                        <input
+                                            type="range"
+                                            min={0}
+                                            max={1}
+                                            step={0.05}
+                                            value={settings.subtitles.bgOpacity}
+                                            onChange={e => player.setSubtitleBgOpacity(parseFloat(e.target.value))}
+                                            className="w-full h-1 accent-indigo-500 cursor-pointer"
+                                        />
+                                    </div>
+
+                                    {/* Load from file */}
+                                    <div>
+                                        <input
+                                            ref={subtitleFileInputRef}
+                                            type="file"
+                                            accept=".srt,.vtt,.sub,.ass,.ssa"
+                                            className="hidden"
+                                            onChange={handleSubtitleFileSelected}
+                                        />
+                                        <button
+                                            onClick={handlePickSubtitleFile}
+                                            disabled={isLoadingSubtitle}
+                                            className="w-full px-2 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 hover:text-white rounded text-[10px] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                                        >
+                                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                                            </svg>
+                                            Carregar legenda…
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -865,6 +1037,38 @@ export default function Player() {
     );
 }
 
+function VolumeIcon({ volume, muted }: { volume: number; muted: boolean }) {
+    if (muted || volume === 0) {
+        return (
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z" />
+            </svg>
+        );
+    }
+    if (volume < 0.5) {
+        return (
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z" />
+            </svg>
+        );
+    }
+    return (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z" />
+        </svg>
+    );
+}
+
+function needsTranscoding(mediaInfo: import('../types').MediaInfo | null, filename: string): boolean {
+    const isHEVC = mediaInfo?.streams.some(s => s.codec_name === 'hevc' || s.codec_name === 'h265');
+    const isUnsupportedAudio = mediaInfo?.streams.some(s =>
+        s.codec_type === 'audio' &&
+        ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(s.codec_name.toLowerCase())
+    );
+    const isMKV = filename.toLowerCase().endsWith('.mkv');
+    return !!(isHEVC || isUnsupportedAudio || isMKV);
+}
+
 function formatTime(seconds: number): string {
     if (!isFinite(seconds) || seconds < 0) return '0:00';
     const h = Math.floor(seconds / 3600);
@@ -876,55 +1080,14 @@ function formatTime(seconds: number): string {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function toVtt(content: string, filename: string, offset: number = 0): string {
-    const ext = filename.split('.').pop()?.toLowerCase();
-    
-    // Helper to add offset to "HH:MM:SS.mmm" or "HH:MM:SS,mmm"
-    const shiftTime = (timeStr: string) => {
-        try {
-            const parts = timeStr.replace(',', '.').split(':');
-            if (parts.length !== 3) return timeStr;
-            const [h, m, s_ms] = parts;
-            let totalSeconds = parseInt(h) * 3600 + parseInt(m) * 60 + parseFloat(s_ms);
-            totalSeconds = Math.max(0, totalSeconds + offset);
-            
-            const nh = Math.floor(totalSeconds / 3600);
-            const nm = Math.floor((totalSeconds % 3600) / 60);
-            const ns = (totalSeconds % 60).toFixed(3);
-            
-            return `${nh.toString().padStart(2, '0')}:${nm.toString().padStart(2, '0')}:${ns.padStart(6, '0')}`;
-        } catch {
-            return timeStr;
-        }
-    };
-
-    if (ext === 'srt') {
-        const normalised = content.trim().replace(/\r\n|\r/g, '\n');
-        // Match timestamps: 00:00:20,000 --> 00:00:24,400
-        const fixed = normalised.replace(/(\d{2}:\d{2}:\d{2}[.,]\d{3}) --> (\d{2}:\d{2}:\d{2}[.,]\d{3})/g, 
-            (_, start, end) => `${shiftTime(start)} --> ${shiftTime(end)}`);
-        return 'WEBVTT\n\n' + fixed;
-    }
-    
-    if (ext === 'vtt') {
-        const normalised = content.trim().replace(/\r\n|\r/g, '\n');
-        // Only apply offset if needed
-        if (offset === 0 && normalised.startsWith('WEBVTT')) return normalised;
-        
-        const lines = normalised.split('\n');
-        const result = lines.map(line => {
-            if (line.includes(' --> ')) {
-                return line.replace(/(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})/g,
-                    (_, start, end) => `${shiftTime(start)} --> ${shiftTime(end)}`);
-            }
-            return line;
-        });
-        
-        if (!normalised.startsWith('WEBVTT')) {
-            return 'WEBVTT\n\n' + result.join('\n');
-        }
-        return result.join('\n');
-    }
-    
-    return content;
+function cleanFilename(name: string): string {
+    return name
+        .replace(/\.[^.]+$/, '')
+        .replace(/\[.*?\]/g, '')
+        .replace(/\((?:19|20)\d{2}\)/g, '')
+        .replace(/S\d{2}E\d{2}/gi, '')
+        .replace(/\b\d{3,4}p\b/gi, '')
+        .replace(/\b(BluRay|WEB-DL|WEBRip|HDTV|x264|x265|HEVC|AAC|DDP|HDR)\b/gi, '')
+        .replace(/[-._]+/g, ' ')
+        .trim();
 }

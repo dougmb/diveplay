@@ -14,6 +14,13 @@ export interface SubtitleSettings {
     enabled: boolean;
     fontSize: number;
     offset: number; // in seconds
+    color: string;      // hex color, default '#ffffff'
+    bgOpacity: number;  // 0–1, default 0.75
+}
+
+export interface AppSettings {
+    openSubtitlesApiKey?: string;
+    subtitleLanguage?: string; // ISO 639-1, e.g. 'pt', 'en'
 }
 
 export type AspectRatio = 'auto' | 'contain' | 'cover' | 'fill' | '16/9' | '4/3';

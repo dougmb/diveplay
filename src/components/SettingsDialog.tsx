@@ -1,19 +1,22 @@
 // SettingsDialog.tsx — File type preferences dialog
 
 import { useState } from 'react';
-import type { FileTypePreferences } from '../types';
+import type { FileTypePreferences, AppSettings } from '../types';
 import { ALL_VIDEO_EXTENSIONS, ALL_AUDIO_EXTENSIONS, ALL_SUBTITLE_EXTENSIONS } from '../services/fileSystem';
 
 interface SettingsDialogProps {
     prefs: FileTypePreferences;
-    onSave: (prefs: FileTypePreferences) => void;
+    appSettings: AppSettings;
+    onSave: (prefs: FileTypePreferences, appSettings: AppSettings) => void;
     onClose: () => void;
 }
 
-export default function SettingsDialog({ prefs, onSave, onClose }: SettingsDialogProps) {
+export default function SettingsDialog({ prefs, appSettings, onSave, onClose }: SettingsDialogProps) {
     const [video, setVideo] = useState<string[]>(prefs.video);
     const [audio, setAudio] = useState<string[]>(prefs.audio);
     const [subtitles, setSubtitles] = useState<string[]>(prefs.subtitles);
+    const [apiKey, setApiKey] = useState(appSettings.openSubtitlesApiKey ?? '');
+    const [subLang, setSubLang] = useState(appSettings.subtitleLanguage ?? 'en');
 
     const toggleExtension = (ext: string, current: string[], setFn: (v: string[]) => void) => {
         if (current.includes(ext)) {
@@ -24,7 +27,10 @@ export default function SettingsDialog({ prefs, onSave, onClose }: SettingsDialo
     };
 
     const handleSave = () => {
-        onSave({ video, audio, subtitles });
+        onSave(
+            { video, audio, subtitles },
+            { openSubtitlesApiKey: apiKey.trim() || undefined, subtitleLanguage: subLang.trim() || 'en' }
+        );
         onClose();
     };
 
@@ -96,6 +102,42 @@ export default function SettingsDialog({ prefs, onSave, onClose }: SettingsDialo
                                     {ext}
                                 </button>
                             ))}
+                        </div>
+                    </div>
+                </div>
+
+                {/* OpenSubtitles */}
+                <div className="px-6 pb-4 space-y-3 border-t border-zinc-800 pt-4">
+                    <div>
+                        <h3 className="text-sm font-medium text-zinc-300 mb-1">Auto Subtitles (OpenSubtitles)</h3>
+                        <p className="text-xs text-zinc-500 mb-3">
+                            Busca legendas automaticamente ao abrir um arquivo.{' '}
+                            <a href="https://www.opensubtitles.com/consumers" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">
+                                Criar API key gratuita
+                            </a>
+                        </p>
+                        <div className="space-y-2">
+                            <div>
+                                <label className="text-xs text-zinc-400 block mb-1">API Key</label>
+                                <input
+                                    type="password"
+                                    placeholder="Sua API key do OpenSubtitles"
+                                    value={apiKey}
+                                    onChange={e => setApiKey(e.target.value)}
+                                    className="w-full px-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-md text-xs text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-indigo-500/50"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs text-zinc-400 block mb-1">Idioma preferido</label>
+                                <input
+                                    type="text"
+                                    placeholder="pt, en, es, fr..."
+                                    value={subLang}
+                                    onChange={e => setSubLang(e.target.value)}
+                                    maxLength={10}
+                                    className="w-32 px-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-md text-xs text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-indigo-500/50"
+                                />
+                            </div>
                         </div>
                     </div>
                 </div>

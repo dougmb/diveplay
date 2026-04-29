@@ -17,6 +17,25 @@ function isFullSupportBrowser(): boolean {
   return 'showDirectoryPicker' in window;
 }
 
+function DragOverlay({ isDragging, isScanning }: { isDragging: boolean; isScanning: boolean }) {
+  if (isScanning) {
+    return (
+      <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-50 pointer-events-none gap-4">
+        <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-lg font-medium text-zinc-200">Scanning folder…</p>
+      </div>
+    );
+  }
+  if (isDragging) {
+    return (
+      <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
+        <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
+      </div>
+    );
+  }
+  return null;
+}
+
 function App() {
   const hasFullSupport = isFullSupportBrowser();
   const [state, setState] = useState<PlayerStoreState>(initialState);
@@ -138,6 +157,28 @@ function App() {
       settings: {
         ...s.settings,
         subtitles: { ...s.settings.subtitles, offset },
+      },
+    }));
+    saveCurrentState();
+  }, [saveCurrentState]);
+
+  const setSubtitleColor = useCallback((color: string) => {
+    setState((s) => ({
+      ...s,
+      settings: {
+        ...s.settings,
+        subtitles: { ...s.settings.subtitles, color },
+      },
+    }));
+    saveCurrentState();
+  }, [saveCurrentState]);
+
+  const setSubtitleBgOpacity = useCallback((bgOpacity: number) => {
+    setState((s) => ({
+      ...s,
+      settings: {
+        ...s.settings,
+        subtitles: { ...s.settings.subtitles, bgOpacity },
       },
     }));
     saveCurrentState();
@@ -423,9 +464,11 @@ function App() {
     toggleSubtitles,
     setSubtitleFontSize,
     setSubtitleOffset,
+    setSubtitleColor,
+    setSubtitleBgOpacity,
     setSortOrder,
     reset,
-  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, setAspectRatio, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, setSubtitleOffset, setSortOrder, reset]);
+  }), [state, setPlaylist, setDirHandle, play, next, prev, setIsPlaying, setPosition, setDuration, setVolume, setSpeed, setAspectRatio, toggleShuffle, toggleLoop, toggleSubtitles, setSubtitleFontSize, setSubtitleOffset, setSubtitleColor, setSubtitleBgOpacity, setSortOrder, reset]);
 
   // ── Folder ready handler: read saved state ──
 
@@ -436,7 +479,11 @@ function App() {
     try {
       saved = await readState(handle);
       if (saved?.settings) {
-        mergedSettings = { ...mergedSettings, ...saved.settings };
+        mergedSettings = {
+          ...mergedSettings,
+          ...saved.settings,
+          subtitles: { ...mergedSettings.subtitles, ...saved.settings.subtitles },
+        };
       }
     } catch (err) {
       console.warn('Could not read saved state:', err);
@@ -486,14 +533,6 @@ function App() {
   const handleDismissResume = () => {
     setShowResumeDialog(false);
     setSavedState(null);
-  };
-
-  const handleSelectNewFolder = async () => {
-    await saveCurrentState();
-    await clearHandle();
-    setState(initialState);
-    setSavedState(null);
-    setShowResumeDialog(false);
   };
 
   const handleChangeFolder = async () => {
@@ -623,17 +662,7 @@ function App() {
           onDrop={handleDrop}
         >
           <FallbackPicker onFilesSelected={handleFallbackFiles} />
-          {isDragging && !isScanning && (
-            <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
-              <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
-            </div>
-          )}
-          {isScanning && (
-            <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-50 pointer-events-none gap-4">
-              <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-              <p className="text-lg font-medium text-zinc-200">Scanning folder…</p>
-            </div>
-          )}
+          <DragOverlay isDragging={isDragging} isScanning={isScanning} />
         </div>
       );
     }
@@ -645,17 +674,7 @@ function App() {
         onDrop={handleDrop}
       >
         <FolderPicker onFolderReady={handleFolderReady} />
-        {isDragging && !isScanning && (
-          <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
-            <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
-          </div>
-        )}
-        {isScanning && (
-          <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-50 pointer-events-none gap-4">
-            <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-lg font-medium text-zinc-200">Scanning folder…</p>
-          </div>
-        )}
+        <DragOverlay isDragging={isDragging} isScanning={isScanning} />
       </div>
     );
   }
@@ -669,17 +688,7 @@ function App() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        {isDragging && !isScanning && (
-          <div className="absolute inset-0 bg-indigo-600/20 border-4 border-dashed border-indigo-500 flex items-center justify-center z-50 pointer-events-none">
-            <p className="text-2xl font-bold text-white bg-zinc-900/80 px-8 py-4 rounded-xl shadow-2xl">Drop your folder here</p>
-          </div>
-        )}
-        {isScanning && (
-          <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center z-50 pointer-events-none gap-4">
-            <div className="w-10 h-10 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-lg font-medium text-zinc-200">Scanning folder…</p>
-          </div>
-        )}
+        <DragOverlay isDragging={isDragging} isScanning={isScanning} />
         {/* Sidebar */}
         <aside className={`
           ${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-72'}
@@ -733,7 +742,7 @@ function App() {
             state={savedState}
             onResume={handleResume}
             onDismiss={handleDismissResume}
-            onSelectNewFolder={handleSelectNewFolder}
+            onSelectNewFolder={handleChangeFolder}
           />
         )}
 

@@ -2,6 +2,7 @@
 
 import { useState, useMemo } from 'react';
 import type { MediaFile, SortOrder } from '../types';
+import { sortFiles } from '../utils/sortFiles';
 
 interface PlaylistProps {
     files: MediaFile[];
@@ -25,7 +26,7 @@ export default function Playlist({ files, currentFile, onFileSelect, sortOrder, 
     }, [files, searchQuery]);
 
     const groups = useMemo(() => groupByFolder(filteredFiles), [filteredFiles]);
-    const folderNames = Object.keys(groups).sort();
+    const folderNames = useMemo(() => Object.keys(groups).sort(), [groups]);
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
@@ -110,7 +111,7 @@ export default function Playlist({ files, currentFile, onFileSelect, sortOrder, 
                                     </span>
                                 </div>
                             )}
-                            {groups[folder].map((file) => (
+                            {sortFiles(groups[folder], sortOrder).map((file) => (
                                 <FileButton key={file.relativePath} file={file} isActive={currentFile?.relativePath === file.relativePath} onFileSelect={onFileSelect} />
                             ))}
                         </div>
@@ -152,8 +153,9 @@ function groupByFolder(files: MediaFile[]): Record<string, MediaFile[]> {
     const groups: Record<string, MediaFile[]> = {};
 
     for (const file of files) {
-        const lastSlash = file.relativePath.lastIndexOf('/');
-        const folder = lastSlash === -1 ? '' : file.relativePath.slice(0, lastSlash);
+        const path = file.relativePath;
+        const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        const folder = lastSlash === -1 ? '' : path.slice(0, lastSlash);
 
         if (!groups[folder]) {
             groups[folder] = [];
