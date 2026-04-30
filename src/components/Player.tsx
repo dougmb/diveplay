@@ -34,6 +34,7 @@ export default function Player() {
     const [selectedAudioTrack, setSelectedAudioTrack] = useState<number>(0);
     const [showTrackMenu, setShowTrackMenu] = useState(false);
     const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+    const subtitleMenuRef = useRef<HTMLDivElement | null>(null);
     const [transcodeSeekTime, setTranscodeSeekTime] = useState<number>(0);
     const [skipCountdown, setSkipCountdown] = useState<number | null>(null);
     
@@ -267,6 +268,18 @@ export default function Player() {
         document.addEventListener('fullscreenchange', onFsChange);
         return () => document.removeEventListener('fullscreenchange', onFsChange);
     }, []);
+
+    // Close subtitle menu on outside click
+    useEffect(() => {
+        if (!showSubtitleMenu) return;
+        const handler = (e: MouseEvent) => {
+            if (subtitleMenuRef.current && !subtitleMenuRef.current.contains(e.target as Node)) {
+                setShowSubtitleMenu(false);
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [showSubtitleMenu]);
 
     // Key handlers
     useEffect(() => {
@@ -832,7 +845,7 @@ export default function Player() {
                     </button>
 
                     {/* Subtitle Sync/Size Menu Trigger */}
-                    <div className="relative">
+                    <div className="relative" ref={subtitleMenuRef}>
                         <button
                             onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
                             className={`p-1.5 transition-colors cursor-pointer ${showSubtitleMenu ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'}`}
@@ -847,9 +860,20 @@ export default function Player() {
                             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 bg-zinc-900 border border-zinc-700 rounded-lg shadow-xl overflow-hidden z-20">
                                 <div className="px-3 py-2 border-b border-zinc-800 bg-zinc-800/50 flex items-center justify-between">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Subtitle Settings</span>
-                                    {isLoadingSubtitle && (
-                                        <div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin" />
-                                    )}
+                                    <div className="flex items-center gap-2">
+                                        {isLoadingSubtitle && (
+                                            <div className="w-3 h-3 border border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                                        )}
+                                        <button
+                                            onClick={() => setShowSubtitleMenu(false)}
+                                            className="text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                                            title="Close"
+                                        >
+                                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                            </svg>
+                                        </button>
+                                    </div>
                                 </div>
                                 <div className="p-3 space-y-3 max-h-80 overflow-y-auto">
                                     {/* Track selector */}
