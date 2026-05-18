@@ -75,6 +75,7 @@ struct AppState {
     stream_token: String,
 }
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[tauri::command]
@@ -116,13 +117,32 @@ fn get_sidecar_path(handle: &AppHandle, name: &str) -> Result<PathBuf, String> {
         }
     }
 
-    // 3. Try AppData path directly (for installed apps)
+    // 3. Try AppData path directly (Windows installed apps)
     if let Ok(app_data) = std::env::var("APPDATA") {
         let app_data_path = PathBuf::from(app_data).join("com.diveplay.app").join("resources").join("binaries").join(&binary_name);
         app_log!("  Try 3 - AppData: {:?}", app_data_path);
         if app_data_path.exists() {
             app_log!("  Found at: {:?}", app_data_path);
             return Ok(app_data_path);
+        }
+    }
+
+    // 3b. Linux/macOS XDG and AppImage paths
+    {
+        let candidates = [
+            std::env::var("APPDIR").ok().map(|d| PathBuf::from(d).join("usr/bin").join(&binary_name)),
+            std::env::var("APPDIR").ok().map(|d| PathBuf::from(d).join("resources/binaries").join(&binary_name)),
+            std::env::var("XDG_DATA_HOME").ok().map(|d| PathBuf::from(d).join("com.diveplay.app/resources/binaries").join(&binary_name)),
+            std::env::var("HOME").ok().map(|d| PathBuf::from(d).join(".local/share/com.diveplay.app/resources/binaries").join(&binary_name)),
+            Some(PathBuf::from("/usr/lib/diveplay/resources/binaries").join(&binary_name)),
+            Some(PathBuf::from("/usr/share/diveplay/resources/binaries").join(&binary_name)),
+        ];
+        for path in candidates.into_iter().flatten() {
+            app_log!("  Try 3b - XDG/AppImage: {:?}", path);
+            if path.exists() {
+                app_log!("  Found at: {:?}", path);
+                return Ok(path);
+            }
         }
     }
 
@@ -172,9 +192,26 @@ fn get_sidecar_path(handle: &AppHandle, name: &str) -> Result<PathBuf, String> {
         }
     }
 
-    // 6. Last resort: check system PATH
-    app_log!("  Try 6 - Falling back to system PATH");
-    Err(format!("Binary {} not found in any location", binary_name))
+    // 6. Linux/macOS: check well-known system paths (apt `ffmpeg` installs to /usr/bin)
+    #[cfg(not(target_os = "windows"))]
+    {
+        let system_paths = [
+            PathBuf::from("/usr/bin").join(&binary_name),
+            PathBuf::from("/usr/local/bin").join(&binary_name),
+            PathBuf::from("/opt/homebrew/bin").join(&binary_name),
+        ];
+        for path in system_paths {
+            app_log!("  Try 6 - System path: {:?}", path);
+            if path.exists() {
+                app_log!("  Found at: {:?}", path);
+                return Ok(path);
+            }
+        }
+    }
+
+    // 7. Last resort: hand off bare name and let the OS resolve via PATH
+    app_log!("  Try 7 - Falling back to system PATH lookup for: {}", binary_name);
+    Ok(PathBuf::from(&binary_name))
 }
 
 #[tauri::command]

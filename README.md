@@ -10,7 +10,8 @@ Available in two versions: a portable **Web Player** and a powerful **Desktop Ap
 | Version | Description | Best For |
 |---------|-------------|----------|
 | **Web (HTML)** | A single, portable HTML file. No installation required. | Basic H.264/AAC files, portability. |
-| **Desktop (Tauri)** | Full application with integrated **FFmpeg** codecs. | MKV, HEVC, AC3, DTS, and high-bitrate files. |
+| **Desktop — Windows (NSIS)** | Installer with bundled **FFmpeg** sidecars. | MKV, HEVC, AC3, DTS, and high-bitrate files. |
+| **Desktop — Linux (.deb / AppImage)** | Uses the system `ffmpeg` package for transcoding. | Same as Windows; `apt install ffmpeg` covers it (declared as a `.deb` dependency). |
 
 > 💡 **Desktop Advantage:** The Desktop version automatically transcodes unsupported codecs (like AC3 audio or HEVC video) on-the-fly, allowing you to play almost any media file without manual conversion.
 
