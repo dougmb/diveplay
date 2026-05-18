@@ -1,6 +1,6 @@
 [package]
 name = "diveplay"
-version = "1.0.8-rc1"
+version = "1.0.8-rc2"
 description = "DivePlay Media Player"
 authors = ["DouglasMB"]
 license = "GPL-2.0-only"

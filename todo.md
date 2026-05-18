@@ -62,9 +62,24 @@ On a clean Debian/Ubuntu VM:
 - [ ] Same test inside the `.AppImage` — confirm `$APPDIR` fallbacks or `/usr/bin` (depending on host) work.
 
 Release path:
-- [ ] Tag `v1.0.8-rc1`; confirm workflow uploads `.deb`, `.AppImage`, `.exe`, and `diveplay-web.html` to the same release exactly once each.
+- [x] Tag `v1.0.8-rc1` pushed (run `26056186041`). Result: Windows `.exe` ✅, Linux `.deb` ✅, Linux `.AppImage` ❌, `diveplay-web.html` ❌ (gated to Linux runner which failed).
+- [ ] Re-tag `v1.0.8-rc2` once the libfuse2 fix below is in.
+- [ ] Decide whether to delete the partial `v1.0.8-rc1` GitHub Release (incomplete artifacts).
 
 ## 9. Docs
 
 - [x] README "Two Ways to Play" table now lists Windows NSIS and Linux `.deb`/AppImage separately.
 - [x] CLAUDE.md "Release" section updated for the matrix workflow and the system-ffmpeg strategy on Linux.
+- [x] `release.md` created with full release-process documentation.
+
+## 10. Fix: `libfuse2` missing on Ubuntu 22.04 runner
+
+CI run `26056186041` failed at the AppImage bundling step with `failed to run linuxdeploy`. Investigation of the GH Actions log showed **17 seconds of silence** between the last plugin download and the failure — no strip warnings, no squashfs progress.
+
+Root cause: `ubuntu-22.04` runner images ship `libfuse3` but not `libfuse2`. `linuxdeploy-x86_64.AppImage` is itself an AppImage and self-mounts via FUSE2; without it, the AppImage exits silently with non-zero status. `tauri-bundler` swallows its stderr, leaving only the generic "failed to run linuxdeploy".
+
+`NO_STRIP: "true"` did propagate (confirmed in the CI env dump) — it stays as belt-and-suspenders for future binutils issues, but isn't what was blocking the build.
+
+- [x] `.github/workflows/release.yml` — appended `libfuse2` to the Linux `apt-get install` list.
+- [x] Bumped version `1.0.8-rc1` → `1.0.8-rc2` across `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`. Lockfiles refreshed.
+- [ ] Push `v1.0.8-rc2` tag and verify all four artifacts (`.exe`, `.deb`, `.AppImage`, `diveplay-web.html`) attach to the same Release.

@@ -42,7 +42,8 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libssl-dev
+            libssl-dev \
+            libfuse2
 
       - name: Install frontend dependencies
         run: npm install

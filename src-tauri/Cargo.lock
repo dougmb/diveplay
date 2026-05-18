@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "diveplay"
-version = "1.0.8-rc1"
+version = "1.0.8-rc2"
 dependencies = [
  "axum",
  "env_logger",
