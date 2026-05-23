@@ -42,7 +42,12 @@ function parseTimestamp(ts: string): number {
 
 function sanitizeText(text: string): string {
     return text
-        .replace(/<(?!\/?(?:i|b|u)(?:\s[^>]*)?>)[^>]+>/gi, '')
+        // Strip all tags except i, b, u, br (even with attributes)
+        .replace(/<(?!\/?(?:i|b|u|br)\s*\/??>)[^>]*>/gi, '')
+        // Remove any attributes from allowed tags: <i class="x"> → <i>
+        .replace(/<(\/?)(?:i|b|u|br)(?:\s[^>]*)?(\/?)>/gi, '<$1$2>')
+        // Normalize <br/> → <br>
+        .replace(/<br\/?>/gi, '<br>')
         .trim();
 }
 

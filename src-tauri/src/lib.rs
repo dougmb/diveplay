@@ -455,11 +455,13 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             
-            // Generate a simple session token
-            let stream_token = format!("{:x}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos());
+            // Generate a cryptographically random session token
+            use rand::Rng;
+            let stream_token: String = rand::thread_rng()
+                .sample_iter(&rand::distributions::Alphanumeric)
+                .take(32)
+                .map(char::from)
+                .collect();
             
             let state = Arc::new(AppState { 
                 handle: handle.clone(),
@@ -474,7 +476,7 @@ pub fn run() {
                 let router = Router::new()
                     .route("/stream/*path", get(stream_file))
                     .with_state(state)
-                    .layer(CorsLayer::permissive());
+                    .layer(CorsLayer::new()); // no CORS headers — blocks cross-origin fetch
 
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 let port = listener.local_addr().unwrap().port();

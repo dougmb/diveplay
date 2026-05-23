@@ -7,7 +7,7 @@ import { capabilities } from '../platform/capabilities';
 import { loadAppSettings } from '../services/db';
 import { parseSubtitleCues, getActiveCue, decodeSubtitleBytes } from '../utils/subtitleParser';
 import type { SubtitleCue } from '../utils/subtitleParser';
-import type { MediaInfo, AppSettings } from '../types';
+import type { MediaFile, MediaInfo, AppSettings } from '../types';
 
 interface SubtitleTrack {
     name: string;
@@ -37,11 +37,22 @@ export default function Player() {
     const subtitleMenuRef = useRef<HTMLDivElement | null>(null);
     const [transcodeSeekTime, setTranscodeSeekTime] = useState<number>(0);
     const [skipCountdown, setSkipCountdown] = useState<number | null>(null);
-    
+    const [seekFeedback, setSeekFeedback] = useState<{ dir: 'fwd' | 'bwd'; seconds: number; n: number } | null>(null);
+    const [volumeFeedback, setVolumeFeedback] = useState<{ pct: number; n: number } | null>(null);
+
     const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const progressRef = useRef<HTMLDivElement | null>(null);
     const isEndedRef = useRef(false);
+    const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const keyRepeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const seekFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const volumeFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const holdAccumRef = useRef(0);
+    const holdFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const seekContextRef = useRef<{ mediaInfo: MediaInfo | null; transcodeSeekTime: number; currentFile: MediaFile | null; duration: number }>({
+        mediaInfo: null, transcodeSeekTime: 0, currentFile: null, duration: 0,
+    });
     // True while a file is loading (between effect start and loadedmetadata) — suppresses
     // spurious 'pause' DOM events that fire during src transitions.
     const isLoadingRef = useRef(false);
@@ -232,6 +243,26 @@ export default function Player() {
         }
     }, [position, blobUrl, isPlaying, transcodeSeekTime]);
 
+    const handleContainerClick = useCallback(() => {
+        if (clickTimerRef.current) {
+            clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+            return;
+        }
+        clickTimerRef.current = setTimeout(() => {
+            clickTimerRef.current = null;
+            player.setIsPlaying(!isPlaying);
+        }, 300);
+    }, [isPlaying, player]);
+
+    const handleContainerDoubleClick = useCallback(() => {
+        if (clickTimerRef.current) {
+            clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+        }
+        toggleFullscreen();
+    }, []);
+
     // Auto-hide controls
     const resetHideTimer = useCallback(() => {
         setShowControls(true);
@@ -283,9 +314,55 @@ export default function Player() {
 
     // Key handlers
     useEffect(() => {
-        const handleKey = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+        const showSeekFb = (dir: 'fwd' | 'bwd') => {
+            setSeekFeedback(prev => ({
+                dir,
+                seconds: prev && prev.dir === dir ? prev.seconds + 10 : 10,
+                n: Date.now(),
+            }));
+            if (seekFeedbackTimerRef.current) clearTimeout(seekFeedbackTimerRef.current);
+            seekFeedbackTimerRef.current = setTimeout(() => setSeekFeedback(null), 800);
+        };
+
+        const showVolFb = (vol: number) => {
+            setVolumeFeedback({ pct: Math.round(vol * 100), n: Date.now() });
+            if (volumeFeedbackTimerRef.current) clearTimeout(volumeFeedbackTimerRef.current);
+            volumeFeedbackTimerRef.current = setTimeout(() => setVolumeFeedback(null), 1000);
+        };
+
+        const flushTranscodeSeek = (accum: number) => {
+            const c = seekContextRef.current;
             const el = mediaRef.current;
+            const actualPos = c.transcodeSeekTime + (el?.currentTime ?? 0);
+            const newTime = Math.max(0, Math.min(c.duration || 0, actualPos + accum));
+            isLoadingRef.current = true;
+            if (el) { el.pause(); el.src = ''; el.load(); }
+            player.setPosition(newTime);
+            setTranscodeSeekTime(newTime);
+        };
+
+        const seekBy = (delta: number) => {
+            const c = seekContextRef.current;
+            const el = mediaRef.current;
+            showSeekFb(delta > 0 ? 'fwd' : 'bwd');
+            const shouldTranscode = capabilities.canTranscode && needsTranscoding(c.mediaInfo, c.currentFile?.name ?? '');
+            if (shouldTranscode) {
+                holdAccumRef.current += delta;
+                if (holdFlushTimerRef.current) clearTimeout(holdFlushTimerRef.current);
+                holdFlushTimerRef.current = setTimeout(() => {
+                    const accum = holdAccumRef.current;
+                    holdAccumRef.current = 0;
+                    holdFlushTimerRef.current = null;
+                    flushTranscodeSeek(accum);
+                }, 350);
+            } else {
+                if (!el) return;
+                el.currentTime = Math.max(0, Math.min(el.duration || 0, el.currentTime + delta));
+            }
+        };
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             switch (e.code) {
                 case 'Space':
                     e.preventDefault();
@@ -293,20 +370,34 @@ export default function Player() {
                     break;
                 case 'ArrowLeft':
                     e.preventDefault();
-                    if (el) el.currentTime = Math.max(0, el.currentTime - 10);
+                    seekBy(-10);
+                    if (!e.repeat) {
+                        clearKeyRepeat();
+                        keyRepeatTimerRef.current = setInterval(() => seekBy(-10), 500);
+                    }
                     break;
                 case 'ArrowRight':
                     e.preventDefault();
-                    if (el) el.currentTime = Math.min(el.duration || 0, el.currentTime + 10);
+                    seekBy(10);
+                    if (!e.repeat) {
+                        clearKeyRepeat();
+                        keyRepeatTimerRef.current = setInterval(() => seekBy(10), 500);
+                    }
                     break;
-                case 'ArrowUp':
+                case 'ArrowUp': {
                     e.preventDefault();
-                    player.setVolume(Math.min(1, settings.volume + 0.05));
+                    const newVol = Math.min(1, settings.volume + 0.10);
+                    player.setVolume(newVol);
+                    showVolFb(newVol);
                     break;
-                case 'ArrowDown':
+                }
+                case 'ArrowDown': {
                     e.preventDefault();
-                    player.setVolume(Math.max(0, settings.volume - 0.05));
+                    const newVol = Math.max(0, settings.volume - 0.10);
+                    player.setVolume(newVol);
+                    showVolFb(newVol);
                     break;
+                }
                 case 'KeyF':
                     e.preventDefault();
                     toggleFullscreen();
@@ -317,10 +408,36 @@ export default function Player() {
                     break;
             }
         };
-        window.addEventListener('keydown', handleKey);
-        return () => window.removeEventListener('keydown', handleKey);
+
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+                clearKeyRepeat();
+                // Flush accumulated transcoded seek immediately on release
+                if (holdFlushTimerRef.current) {
+                    clearTimeout(holdFlushTimerRef.current);
+                    holdFlushTimerRef.current = null;
+                    const accum = holdAccumRef.current;
+                    holdAccumRef.current = 0;
+                    if (accum !== 0) flushTranscodeSeek(accum);
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isPlaying, settings.volume]);
+
+    const clearKeyRepeat = useCallback(() => {
+        if (keyRepeatTimerRef.current) {
+            clearInterval(keyRepeatTimerRef.current);
+            keyRepeatTimerRef.current = null;
+        }
+    }, []);
 
     const handleTimeUpdate = () => {
         const el = mediaRef.current;
@@ -412,6 +529,7 @@ export default function Player() {
     };
 
     const handleProgressClick = (e: React.MouseEvent) => {
+        e.stopPropagation(); // prevent bubbling to container (would toggle play/pause)
         const el = mediaRef.current;
         const bar = progressRef.current;
         if (!el || !bar) return;
@@ -422,20 +540,19 @@ export default function Player() {
         const shouldTranscode = capabilities.canTranscode && needsTranscoding(mediaInfo, currentFile?.name ?? '');
 
         if (shouldTranscode) {
-            // Mark as loading before pausing so handlePause ignores the transition event
             isLoadingRef.current = true;
-            // Stop current playback and clear source to prevent buffer loops
-            if (el) {
-                el.pause();
-                el.src = '';
-                el.load();
-            }
-
+            el.pause();
+            el.src = '';
+            el.load();
             player.setPosition(newTime);
             setTranscodeSeekTime(newTime);
         } else {
             el.currentTime = newTime;
             player.setPosition(newTime);
+            // Resume playback if it was playing (setting currentTime can pause briefly)
+            if (isPlaying) {
+                el.play().catch(() => {});
+            }
         }
     };
 
@@ -484,6 +601,13 @@ export default function Player() {
 
                 const dlData = await dlRes.json() as { link: string };
                 if (!dlData.link || cancelled) return;
+
+                // Validate download URL — must be HTTPS and not an internal address (SSRF guard)
+                try {
+                    const dlUrl = new URL(dlData.link);
+                    if (dlUrl.protocol !== 'https:') return;
+                    if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(dlUrl.hostname)) return;
+                } catch { return; }
 
                 const subRes = await fetch(dlData.link);
                 if (!subRes.ok || cancelled) return;
@@ -584,6 +708,9 @@ export default function Player() {
         );
     }
 
+    // Keep seekContextRef in sync — read by key handler without stale closures
+    seekContextRef.current = { mediaInfo, transcodeSeekTime, currentFile, duration };
+
     const progress = duration > 0 ? (player.position / duration) * 100 : 0;
     const isVideo = currentFile.type === 'video';
 
@@ -613,6 +740,8 @@ export default function Player() {
         <div
             ref={containerRef}
             className="relative w-full h-full bg-black flex flex-col select-none"
+            onClick={handleContainerClick}
+            onDoubleClick={handleContainerDoubleClick}
             onMouseMove={resetHideTimer}
             onMouseLeave={() => { if (isPlaying) setShowControls(false); }}
         >
@@ -625,10 +754,7 @@ export default function Player() {
             </div>
 
             {/* Media element */}
-            <div
-                className="flex-1 flex items-center justify-center cursor-pointer"
-                onClick={() => player.setIsPlaying(!isPlaying)}
-            >
+            <div className="flex-1 flex items-center justify-center cursor-pointer">
                 {isVideo ? (
                     <>
                         <video
@@ -707,10 +833,52 @@ export default function Player() {
                 </div>
             )}
 
+            {/* Seek feedback overlay */}
+            {seekFeedback && (
+                <div
+                    key={seekFeedback.n}
+                    className="absolute inset-0 flex items-center justify-center pointer-events-none z-10"
+                >
+                    <div
+                        className="bg-black/70 rounded-2xl px-8 py-4 flex items-center gap-3 text-white"
+                        style={{ animation: 'seekFlash 0.8s ease-out forwards' }}
+                    >
+                        <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+                            {seekFeedback.dir === 'fwd'
+                                ? <path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z" />
+                                : <path d="M11 18V6l-8.5 6L11 18zm.5-6 8.5 6V6l-8.5 6z" />
+                            }
+                        </svg>
+                        <span className="text-2xl font-bold tabular-nums">
+                            {seekFeedback.dir === 'fwd' ? '+' : '-'}{seekFeedback.seconds}s
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            {/* Volume feedback overlay */}
+            {volumeFeedback && (
+                <div
+                    key={volumeFeedback.n}
+                    className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none z-10"
+                >
+                    <div
+                        className="bg-black/70 rounded-2xl px-8 py-4 text-white text-center min-w-[110px]"
+                        style={{ animation: 'volumeFlash 1s ease-out forwards' }}
+                    >
+                        <div className="text-2xl font-bold tabular-nums">{volumeFeedback.pct}%</div>
+                        <div className="mt-2 w-20 mx-auto h-1.5 bg-zinc-600 rounded-full overflow-hidden">
+                            <div className="h-full bg-white rounded-full" style={{ width: `${volumeFeedback.pct}%` }} />
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Controls overlay */}
             <div
                 className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 pb-4 pt-8 transition-opacity duration-300 ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'
                     }`}
+                onClick={(e) => e.stopPropagation()}
             >
                 {/* No audio alert */}
                 {showNoAudioAlert && (

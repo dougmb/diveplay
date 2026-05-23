@@ -501,7 +501,8 @@ function App() {
     }));
 
     if (saved?.lastFile) {
-      const fileExists = sorted.some((f) => f.relativePath === saved!.lastFile);
+      const norm = (p: string) => p.replace(/\\/g, '/');
+      const fileExists = sorted.some((f) => norm(f.relativePath) === norm(saved!.lastFile));
       if (fileExists) {
         setSavedState(saved);
         setShowResumeDialog(true);
@@ -522,7 +523,8 @@ function App() {
 
   const handleResume = () => {
     if (!savedState) return;
-    const file = state.playlist.find((f) => f.relativePath === savedState.lastFile);
+    const norm = (p: string) => p.replace(/\\/g, '/');
+    const file = state.playlist.find((f) => norm(f.relativePath) === norm(savedState.lastFile));
     if (file) {
       playAtPosition(file, savedState.lastPosition);
     }
@@ -587,7 +589,7 @@ function App() {
         const item = items[i];
         if (item.kind !== 'file') continue;
 
-        // @ts-ignore
+        // @ts-expect-error non-standard API
         const handle = await item.getAsFileSystemHandle();
         if (handle.kind === 'directory') {
           if (!firstDirHandle) firstDirHandle = handle as FileSystemDirectoryHandle;

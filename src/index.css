@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+@keyframes seekFlash {
+    0%   { opacity: 0; transform: scale(0.8); }
+    15%  { opacity: 1; transform: scale(1.05); }
+    55%  { opacity: 1; transform: scale(1.0); }
+    100% { opacity: 0; transform: scale(0.95); }
+}
+
+@keyframes volumeFlash {
+    0%   { opacity: 0; transform: scale(0.9); }
+    12%  { opacity: 1; transform: scale(1.0); }
+    70%  { opacity: 1; transform: scale(1.0); }
+    100% { opacity: 0; transform: scale(0.95); }
+}

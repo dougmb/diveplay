@@ -1,7 +1,7 @@
 // src/services/web/fileSystem.ts
 import type { MediaFile, PlayerState, FileTypePreferences } from '../../types';
 import type { IFileSystem } from '../core/interfaces';
-import { STATE_FILE_NAME, getExtension, getBaseName, getDirectory } from '../core/utils';
+import { STATE_FILE_NAME, getExtension, getBaseName, getDirectory, parsePlayerState } from '../core/utils';
 
 export const webFileSystem: IFileSystem = {
     async pickFolder(): Promise<FileSystemDirectoryHandle> {
@@ -90,11 +90,10 @@ export const webFileSystem: IFileSystem = {
             const fileHandle = await dirHandle.getFileHandle(STATE_FILE_NAME);
             const file = await fileHandle.getFile();
             const text = await file.text();
-            return JSON.parse(text) as PlayerState;
+            return parsePlayerState(text);
         } catch (err) {
             if (err instanceof DOMException && err.name === 'NotFoundError') return null;
-            if (err instanceof SyntaxError) return null;
-            throw err;
+            return null;
         }
     },
 

@@ -2,7 +2,7 @@
 import type { MediaFile, PlayerState, FileTypePreferences } from '../../types';
 import type { IFileSystem } from '../core/interfaces';
 import { getTauriAPI } from '../tauri';
-import { STATE_FILE_NAME, getExtension, getBaseName, getDirectory } from '../core/utils';
+import { STATE_FILE_NAME, getExtension, getBaseName, getDirectory, parsePlayerState } from '../core/utils';
 
 export const tauriFileSystem: IFileSystem = {
     async pickFolder(): Promise<string> {
@@ -85,9 +85,9 @@ export const tauriFileSystem: IFileSystem = {
         for (const file of allFiles) {
             if (file.type === 'video' || file.type === 'audio') {
                 const key = `${file.directory}/${file.baseName}`;
-                const relativePath = file.path.startsWith(baseDir) 
-                    ? file.path.slice(baseDir.length).replace(/^[\\/]/, '') 
-                    : file.path;
+                const relativePath = (file.path.startsWith(baseDir)
+                    ? file.path.slice(baseDir.length).replace(/^[\\/]/, '')
+                    : file.path).replace(/\\/g, '/');
 
                 files.push({
                     name: file.name,
@@ -112,7 +112,7 @@ export const tauriFileSystem: IFileSystem = {
             const path = `${baseDir}${sep}${STATE_FILE_NAME}`;
             const contents = await api.readFile(path);
             const text = new TextDecoder().decode(contents);
-            return JSON.parse(text) as PlayerState;
+            return parsePlayerState(text);
         } catch {
             return null;
         }
