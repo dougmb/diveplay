@@ -16,8 +16,6 @@ jobs:
         include:
           - os: windows-latest
             platform: windows
-          - os: ubuntu-22.04
-            platform: linux
 
     runs-on: ${{ matrix.os }}
 
@@ -32,18 +30,6 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux build deps
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libssl-dev \
-            libfuse2
 
       - name: Install frontend dependencies
         run: npm install
@@ -69,11 +55,10 @@ jobs:
       # After Tauri builds, dist/index.html is fresh. Rename it and upload the portable web HTML.
       # Run this only on the Linux runner so the artifact isn't uploaded twice.
       - name: Prepare Web Version
-        if: matrix.platform == 'linux'
-        run: cp dist/index.html dist/diveplay-web.html
+        run: Copy-Item dist/index.html dist/diveplay-web.html
+        shell: pwsh
 
       - name: Upload Web HTML to Release
-        if: matrix.platform == 'linux'
         uses: softprops/action-gh-release@v1
         with:
           files: dist/diveplay-web.html
