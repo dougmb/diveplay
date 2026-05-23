@@ -1,4 +1,8 @@
 {
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "permissions": {
     "allow": [
       "Bash(npx tsc:*)",
@@ -9,11 +13,8 @@
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(git tag *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "WebSearch"
     ]
-  },
-  "attribution": {
-    "commit": "",
-    "pr": ""
   }
 }
