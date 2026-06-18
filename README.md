@@ -7,11 +7,11 @@ Available in two versions: a portable **Web Player** and a powerful **Desktop Ap
 
 ## 🚀 Two Ways to Play
 
-| Version | Description | Best For |
-|---------|-------------|----------|
-| **Web (HTML)** | A single, portable HTML file. No installation required. | Basic H.264/AAC files, portability. |
-| **Desktop — Windows (NSIS)** | Installer with bundled **FFmpeg** sidecars. | MKV, HEVC, AC3, DTS, and high-bitrate files. |
-| **Desktop — Linux (.deb / AppImage)** | Uses the system `ffmpeg` package for transcoding. | Same as Windows; `apt install ffmpeg` covers it (declared as a `.deb` dependency). |
+| Version                               | Description                                             | Best For                                                                           |
+| ------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **Web (HTML)**                        | A single, portable HTML file. No installation required. | Basic H.264/AAC files, portability.                                                |
+| **Desktop — Windows (NSIS)**          | Installer with bundled **FFmpeg** sidecars.             | MKV, HEVC, AC3, DTS, and high-bitrate files.                                       |
+| **Desktop — Linux (.deb / AppImage)** | Uses the system `ffmpeg` package for transcoding.       | Same as Windows; `apt install ffmpeg` covers it (declared as a `.deb` dependency). |
 
 > 💡 **Desktop Advantage:** The Desktop version automatically transcodes unsupported codecs (like AC3 audio or HEVC video) on-the-fly, allowing you to play almost any media file without manual conversion.
 
@@ -39,11 +39,11 @@ When you open a folder, DivePlay **scans all files inside it** and automatically
 
 You can switch the playback mode at any time using the controls in the player:
 
-| Mode | Description |
-|------|-------------|
+| Mode           | Description                                          |
+| -------------- | ---------------------------------------------------- |
 | **Sequential** | Plays files in alphabetical order, one after another |
-| **Shuffle** | Randomizes the playlist order |
-| **Loop All** | Repeats the entire playlist indefinitely |
+| **Shuffle**    | Randomizes the playlist order                        |
+| **Loop All**   | Repeats the entire playlist indefinitely             |
 
 ### ⏱️ Resume Where You Left Off
 
@@ -64,13 +64,13 @@ DivePlay automatically saves your progress to a `.player-state.json` file inside
 
 ## Keyboard Shortcuts
 
-| Key | Action |
-|-----|--------|
-| Space | Play/Pause |
-| ← → | Seek -10s / +10s |
-| ↑ ↓ | Volume |
-| F | Fullscreen |
-| M | Mute |
+| Key   | Action           |
+| ----- | ---------------- |
+| Space | Play/Pause       |
+| ← →   | Seek -10s / +10s |
+| ↑ ↓   | Volume           |
+| F     | Fullscreen       |
+| M     | Mute             |
 
 ## Build
 
@@ -85,21 +85,21 @@ Output in `dist/`.
 
 ### Codec Support
 
-DivePlay's compatibility depends on whether you are using the Web version (limited by browser decoders) or the Desktop App (enhanced by FFmpeg):
+DivePlay compatibility depends on whether you are using the Web version (limited by browser decoders) or the Desktop App (enhanced by FFmpeg):
 
-| Format / Codec | Web (HTML) | Desktop (App) | Notes |
-|----------------|------------|---------------|-------|
-| **H.264 / AAC** | ✅ Works | ✅ Works | Universal compatibility |
-| **H.265 / HEVC** | ⚠️ Partial | ✅ Works | App transcodes to H.264 on-the-fly |
-| **AC3 / EAC3** | ❌ No | ✅ Works | App transcodes to AAC on-the-fly |
-| **DTS / TrueHD** | ❌ No | ✅ Works | App transcodes to AAC on-the-fly |
-| **MKV Container**| ⚠️ Spotty | ✅ Works | App handles MKV via streaming |
-| **VP9 / Opus** | ✅ Works | ✅ Works | Well supported in modern browsers |
-| **AV1** | ✅ Works | ✅ Works | Modern open format |
+| Format / Codec    | Web (HTML) | Desktop (App) | Notes                              |
+| ----------------- | ---------- | ------------- | ---------------------------------- |
+| **H.264 / AAC**   | ✅ Works   | ✅ Works      | Universal compatibility            |
+| **H.265 / HEVC**  | ⚠️ Partial | ✅ Works      | App transcodes to H.264 on-the-fly |
+| **AC3 / EAC3**    | ❌ No      | ✅ Works      | App transcodes to AAC on-the-fly   |
+| **DTS / TrueHD**  | ❌ No      | ✅ Works      | App transcodes to AAC on-the-fly   |
+| **MKV Container** | ⚠️ Spotty  | ✅ Works      | App handles MKV via streaming      |
+| **VP9 / Opus**    | ✅ Works   | ✅ Works      | Well supported in modern browsers  |
+| **AV1**           | ✅ Works   | ✅ Works      | Modern open format                 |
 
 ## ❤️ Credits & Acknowledgments
 
-DivePlay's Desktop version is powered by the incredible **[FFmpeg](https://ffmpeg.org/)** project. 
+DivePlay's Desktop version is powered by the incredible **[FFmpeg](https://ffmpeg.org/)** project.
 
 Special thanks to the FFmpeg team for providing the "Swiss Army knife" of multimedia handling, which allows DivePlay to transcode and stream complex formats seamlessly. We also utilize the **[Tauri](https://tauri.app/)** framework to bridge the gap between web technologies and native performance.
 
