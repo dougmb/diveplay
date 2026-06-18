@@ -16,6 +16,7 @@ WORKFLOW.md
 
 # Build artifacts
 .docker-out
+release-artifacts
 
 # Editor directories and files
 .vscode/*

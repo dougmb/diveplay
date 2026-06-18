@@ -30,7 +30,7 @@ mkdir -p "$OUT"
 
 echo ">> Building DivePlay AppImage in ubuntu:22.04 (this can take a while on the first run)…"
 
-docker run --rm \
+docker run --rm -i \
   --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   -v "$REPO":/work \
@@ -146,8 +146,10 @@ chmod +x "$APPDIR/AppRun"
 grep -q "DIVEPLAY_FORCE_GPU" "$APPDIR/AppRun" || { echo "ERROR: AppRun injection failed"; exit 1; }
 
 echo "::STEP:: package final AppImage"
-ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$APPDIR" "$OUTDIR"/diveplay_*_amd64.AppImage 2>/dev/null || \
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$APPDIR" "$OUTDIR/diveplay_amd64.AppImage"
+
+VERSION=$(grep -oP '"version":\s*"\K[^"]+' /work/src-tauri/tauri.conf.json)
+mv "$OUTDIR/diveplay_amd64.AppImage" "$OUTDIR/diveplay_${VERSION}_amd64.AppImage"
 
 echo "::STEP:: export"
 ls -lh "$OUTDIR"/*.AppImage
@@ -165,4 +167,4 @@ echo "   src-tauri/Cargo.lock. Discard those if you are not committing them:"
 echo "     git checkout -- dist package-lock.json src-tauri/Cargo.lock"
 echo
 echo ">> Upload to the existing GitHub Release with:"
-echo "     gh release upload <tag> $OUT/diveplay_*_amd64.AppImage --clobber"
+echo "     gh release upload <tag> $OUT/diveplay_<ver>_amd64.AppImage --clobber"
