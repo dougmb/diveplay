@@ -51,6 +51,7 @@ apt-get install -y --no-install-recommends \
   libwebkit2gtk-4.1-dev \
   libssl-dev libsoup-3.0-dev libgtk-3-dev librsvg2-dev \
   libayatana-appindicator3-dev libxdo-dev \
+  ffmpeg \
   patchelf desktop-file-utils \
   libfuse2 fuse \
   librsvg2-common libgdk-pixbuf-2.0-0 libgdk-pixbuf2.0-bin libglib2.0-bin \
@@ -83,12 +84,14 @@ set -e
 
 OUTDIR=/work/src-tauri/target-docker/release/bundle/appimage
 APPDIR="$OUTDIR/diveplay.AppDir"
-echo "::STEP:: verify AppDir + drop non-portable bundled ffmpeg/ffprobe"
+echo "::STEP:: verify AppDir + replace non-portable bundled ffmpeg/ffprobe"
 test -x "$APPDIR/usr/bin/diveplay" || { echo "ERROR: AppDir/usr/bin/diveplay missing"; exit 1; }
 # bundle.resources ships dynamic Arch ffmpeg/ffprobe (need libav*.so.62, absent here)
-# + 99 MB Windows .exe. They break linuxdeploy and bloat the image; Linux uses the
-# system ffmpeg (get_sidecar_path -> /usr/bin/ffmpeg), so drop them.
+# + 99 MB Windows .exe. They break linuxdeploy and bloat the image, so replace them
+# with Ubuntu 22.04 ffmpeg/ffprobe and let linuxdeploy collect their dependencies.
 rm -rf "$APPDIR/usr/lib/diveplay/binaries"
+cp -L /usr/bin/ffmpeg "$APPDIR/usr/bin/ffmpeg"
+cp -L /usr/bin/ffprobe "$APPDIR/usr/bin/ffprobe"
 rm -f "$OUTDIR"/*.AppImage
 
 echo "::STEP:: linuxdeploy (deploy libs + gtk/gstreamer plugins, generate AppRun)"
@@ -102,7 +105,12 @@ export PATH="$T:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=1 ARCH=x86_64
 cd "$OUTDIR"
 # No --output: just populate the AppDir + generate AppRun; we package manually below.
-linuxdeploy --appdir "$APPDIR" --plugin gtk --plugin gstreamer
+linuxdeploy \
+  --appdir "$APPDIR" \
+  --executable "$APPDIR/usr/bin/ffmpeg" \
+  --executable "$APPDIR/usr/bin/ffprobe" \
+  --plugin gtk \
+  --plugin gstreamer
 
 echo "::STEP:: bundle software Mesa (llvmpipe) into AppDir/usr/lib/dpsoftgl"
 L=/usr/lib/x86_64-linux-gnu
@@ -137,13 +145,26 @@ if [ "${DIVEPLAY_FORCE_GPU:-0}" != "1" ]; then
   export MESA_LOADER_DRIVER_OVERRIDE=swrast
   export WEBKIT_DISABLE_DMABUF_RENDERER=1
 fi
+# Force dark GTK file dialogs (folder picker) in the AppImage. GTK_USE_PORTAL=0
+# avoids host portals/kdialog overriding the bundled GTK theme.
+export APPIMAGE_GTK_THEME="Adwaita:dark"
+export GTK_APPLICATION_PREFER_DARK_THEME=1
+export GTK_THEME="Adwaita:dark"
+export GTK_USE_PORTAL=0
 # === end DivePlay ===
 INJ
-awk '/^exec .*AppRun\.wrapped/ && !done { while((getline line < "/tmp/inject.txt")>0) print line; done=1 } {print}' \
+awk '
+  /^source .*linuxdeploy-plugin-gstreamer\.sh/ && !done {
+    while((getline line < "/tmp/inject.txt")>0) print line;
+    done=1
+  }
+  {print}
+' \
   "$APPDIR/AppRun" > "$APPDIR/AppRun.new"
 mv "$APPDIR/AppRun.new" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
 grep -q "DIVEPLAY_FORCE_GPU" "$APPDIR/AppRun" || { echo "ERROR: AppRun injection failed"; exit 1; }
+grep -q "GTK_USE_PORTAL=0" "$APPDIR/AppRun" || { echo "ERROR: GTK dark-mode injection failed"; exit 1; }
 
 echo "::STEP:: package final AppImage"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 appimagetool "$APPDIR" "$OUTDIR/diveplay_amd64.AppImage"

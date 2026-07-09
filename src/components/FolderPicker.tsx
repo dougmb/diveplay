@@ -56,7 +56,12 @@ export default function FolderPicker({ onFolderReady }: FolderPickerProps) {
             await saveHandle(handle);
             onFolderReady(handle, files);
         } catch (err) {
+            // Web FSA cancel
             if (err instanceof DOMException && err.name === 'AbortError') {
+                return;
+            }
+            // Tauri/native dialog cancel (plugin-dialog / rfd)
+            if (err instanceof Error && /cancel/i.test(err.message)) {
                 return;
             }
             setError('Could not access the folder. Please try again.');

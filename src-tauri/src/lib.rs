@@ -448,6 +448,24 @@ async fn stream_file(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Force dark GTK file dialogs for the AppImage. Other Linux packages still
+    // respect a host-set GTK theme.
+    #[cfg(target_os = "linux")]
+    {
+        let is_appimage = std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some();
+        if is_appimage {
+            unsafe { std::env::set_var("APPIMAGE_GTK_THEME", "Adwaita:dark") };
+            unsafe { std::env::set_var("GTK_USE_PORTAL", "0") };
+        }
+        if is_appimage || std::env::var_os("GTK_THEME").is_none() {
+            // SAFETY: single-threaded at process start, before other threads read env.
+            unsafe { std::env::set_var("GTK_THEME", "Adwaita:dark") };
+        }
+        if is_appimage || std::env::var_os("GTK_APPLICATION_PREFER_DARK_THEME").is_none() {
+            unsafe { std::env::set_var("GTK_APPLICATION_PREFER_DARK_THEME", "1") };
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())

@@ -11,6 +11,7 @@ export const tauriFileSystem: IFileSystem = {
             const selected = await api.open({
                 directory: true,
                 multiple: false,
+                recursive: true,
                 title: 'Select Media Folder'
             });
             if (selected) return selected as string;

@@ -77,11 +77,12 @@ The script (and this design) exist because of several hard constraints:
   distros — the opposite of portable. Ubuntu 22.04 = glibc 2.35. Also, `linuxdeploy`'s gtk
   plugin assumes the Debian `gdk-pixbuf` loader layout and fails on Arch.
 
-- **The bundled ffmpeg/ffprobe are removed from the AppDir.** `bundle.resources` ships dynamic
-  Arch `ffmpeg`/`ffprobe` (which need `libavdevice.so.62`, absent on Ubuntu) plus 99 MB Windows
-  `.exe` files. They break `linuxdeploy`'s dependency resolution and bloat the image. On Linux
-  the app uses the **system** ffmpeg (`get_sidecar_path` → `/usr/bin/ffmpeg`), so dropping them
-  is correct.
+- **The AppImage bundles Ubuntu 22.04 ffmpeg/ffprobe.** `bundle.resources` still contains
+  development/Windows binaries, so the script removes those from the AppDir, installs Ubuntu's
+  `ffmpeg` package in the build container, copies `/usr/bin/ffmpeg` and `/usr/bin/ffprobe` into
+  `AppDir/usr/bin`, and lets `linuxdeploy` collect their shared-library dependencies. Do not
+  rely on the host `/usr/bin/ffmpeg` from inside the AppImage: AppRun's bundled library path can
+  break host FFmpeg binaries, especially on Arch/newer distros.
 
 - **`tauri build` can't run `linuxdeploy` itself inside Docker** (it fails with a silent
   "failed to run linuxdeploy"). The script lets `tauri build` create the AppDir, then runs
@@ -141,10 +142,10 @@ same flag is needed for the manual Linux build).
 
 ## Why certain things are the way they are
 
-- **System `ffmpeg` on Linux** — at runtime `get_sidecar_path` in `src-tauri/src/lib.rs` walks:
+- **FFmpeg lookup on Linux** — at runtime `get_sidecar_path` in `src-tauri/src/lib.rs` walks:
   bundled resources → XDG/AppImage dirs → exe-relative → dev paths → `/usr/bin`, `/usr/local/bin`,
-  `/opt/homebrew/bin` → bare name (`PATH`). The system-binary fallback is what lets both the
-  `.deb` and the AppImage work without shipping a (broken, platform-specific) ffmpeg.
+  `/opt/homebrew/bin` → bare name (`PATH`). The AppImage should find its bundled Ubuntu
+  `AppDir/usr/bin/ffmpeg` first; the system-binary fallback is mainly for `.deb` and development.
 
 - **Single-file web HTML** — Vite's `viteSingleFile` plugin inlines the whole frontend into
   `dist/index.html`; the workflow just renames it so it's an obvious download on the Release page.

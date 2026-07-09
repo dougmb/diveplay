@@ -12,6 +12,7 @@ import { clearHandle } from './services/db';
 import type { MediaFile, PlayerState, AspectRatio, SortOrder } from './types';
 import { sortFiles } from './utils/sortFiles';
 import { isTauri, getTauriAPI } from './services/tauri';
+import { capabilities } from './platform/capabilities';
 
 function isFullSupportBrowser(): boolean {
   return 'showDirectoryPicker' in window;
@@ -654,16 +655,18 @@ function App() {
   }, [state.dirHandle, state.playlist, state.currentFile, showResumeDialog, play]);
 
   // No folder selected — show the picker
+  // Tauri (AppImage/desktop) always gets FolderPicker: WebKitGTK lacks showDirectoryPicker,
+  // so the old hasFullSupport gate incorrectly fell through to FallbackPicker (file-only <input>).
   if (!state.dirHandle) {
-    if (!hasFullSupport) {
+    if (capabilities.hasNativeFileSystem || hasFullSupport) {
       return (
-        <div 
+        <div
           className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center relative"
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
         >
-          <FallbackPicker onFilesSelected={handleFallbackFiles} />
+          <FolderPicker onFolderReady={handleFolderReady} />
           <DragOverlay isDragging={isDragging} isScanning={isScanning} />
         </div>
       );
@@ -675,7 +678,7 @@ function App() {
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <FolderPicker onFolderReady={handleFolderReady} />
+        <FallbackPicker onFilesSelected={handleFallbackFiles} />
         <DragOverlay isDragging={isDragging} isScanning={isScanning} />
       </div>
     );

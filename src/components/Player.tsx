@@ -48,6 +48,7 @@ export default function Player() {
     const keyRepeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const seekFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const volumeFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingMediaErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const holdAccumRef = useRef(0);
     const holdFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const seekContextRef = useRef<{ mediaInfo: MediaInfo | null; transcodeSeekTime: number; currentFile: MediaFile | null; duration: number }>({
@@ -58,6 +59,15 @@ export default function Player() {
     const isLoadingRef = useRef(false);
 
     const { currentFile, isPlaying, settings, duration, position } = player;
+
+    const clearPlaybackError = useCallback(() => {
+        if (pendingMediaErrorTimerRef.current) {
+            clearTimeout(pendingMediaErrorTimerRef.current);
+            pendingMediaErrorTimerRef.current = null;
+        }
+        setMediaError(null);
+        setSkipCountdown(null);
+    }, []);
 
     // Load app settings (API keys, subtitle language) once on mount
     useEffect(() => {
@@ -77,17 +87,24 @@ export default function Player() {
 
     // Clear media error and skip countdown when file changes
     useEffect(() => {
-        setMediaError(null);
+        clearPlaybackError();
         setMediaInfo(null);
         setSelectedAudioTrack(0);
         setShowTrackMenu(false);
         setTranscodeSeekTime(0);
-        setSkipCountdown(null);
         setHasAudioTrack(true);
         setShowNoAudioAlert(false);
         setSelectedSubtitleTrack(0);
         isEndedRef.current = false;
-    }, [currentFile]);
+    }, [currentFile, clearPlaybackError]);
+
+    useEffect(() => {
+        return () => {
+            if (pendingMediaErrorTimerRef.current) {
+                clearTimeout(pendingMediaErrorTimerRef.current);
+            }
+        };
+    }, []);
 
     // Auto-skip countdown on media error
     useEffect(() => {
@@ -104,9 +121,35 @@ export default function Player() {
     const handleMediaError = useCallback((e: React.SyntheticEvent<HTMLMediaElement>) => {
         const el = e.currentTarget;
         const code = el.error?.code;
+        const eventSrc = el.currentSrc || el.src;
 
-        if (code) {
-            console.error('Media error code:', code, 'Source:', el.src);
+        // During transcoded seeks we briefly clear the element source and swap to a
+        // new FFmpeg stream URL. WebKit can still emit an error for the old/empty
+        // source after the replacement stream starts successfully.
+        if (!eventSrc || (blobUrl && eventSrc !== blobUrl)) {
+            console.warn('Ignoring stale media error:', code, 'Source:', eventSrc);
+            return;
+        }
+
+        if (!code) return;
+
+        if (pendingMediaErrorTimerRef.current) {
+            clearTimeout(pendingMediaErrorTimerRef.current);
+        }
+
+        pendingMediaErrorTimerRef.current = setTimeout(() => {
+            pendingMediaErrorTimerRef.current = null;
+
+            const currentEl = mediaRef.current;
+            const currentSrc = currentEl?.currentSrc || currentEl?.src || '';
+            const currentError = currentEl?.error?.code;
+
+            if (!currentEl || !currentSrc || currentSrc !== eventSrc || !currentError) {
+                console.warn('Ignoring recovered media error:', code, 'Source:', eventSrc);
+                return;
+            }
+
+            console.error('Media error code:', currentError, 'Source:', currentSrc);
             if (capabilities.hasNativeLogs) {
                 setMediaError(
                     'Failed to play this file. FFmpeg transcoding may have failed or the file is inaccessible.'
@@ -117,8 +160,8 @@ export default function Player() {
                 );
             }
             setSkipCountdown(8);
-        }
-    }, []);
+        }, 1500);
+    }, [blobUrl]);
 
     // Load file
     useEffect(() => {
@@ -336,6 +379,7 @@ export default function Player() {
             const actualPos = c.transcodeSeekTime + (el?.currentTime ?? 0);
             const newTime = Math.max(0, Math.min(c.duration || 0, actualPos + accum));
             isLoadingRef.current = true;
+            clearPlaybackError();
             if (el) { el.pause(); el.src = ''; el.load(); }
             player.setPosition(newTime);
             setTranscodeSeekTime(newTime);
@@ -442,6 +486,7 @@ export default function Player() {
     const handleTimeUpdate = () => {
         const el = mediaRef.current;
         if (!el) return;
+        if (pendingMediaErrorTimerRef.current || mediaError || skipCountdown !== null) clearPlaybackError();
         
         // If we are transcoding, the actual position is the seek offset + current video time
         const actualPosition = transcodeSeekTime + el.currentTime;
@@ -456,6 +501,7 @@ export default function Player() {
 
     const handleLoadedMetadata = () => {
         isLoadingRef.current = false;
+        clearPlaybackError();
         const el = mediaRef.current;
         if (!el) return;
 
@@ -541,6 +587,7 @@ export default function Player() {
 
         if (shouldTranscode) {
             isLoadingRef.current = true;
+            clearPlaybackError();
             el.pause();
             el.src = '';
             el.load();

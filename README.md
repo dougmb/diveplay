@@ -1,6 +1,6 @@
 # DivePlay
 
-This app is in development!
+This app is in alpha release!
 
 A browser-based media player that lives in your folders and works with your local files.
 Available in two versions: a portable **Web Player** and a powerful **Desktop App**.
