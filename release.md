@@ -1,20 +1,22 @@
 # Release Process
 
-A release is **part automated, part manual**:
+A release is **split by artifact** so platform-specific fixes do not force unrelated validation:
 
-- **Windows installer + portable web HTML** are built automatically by `.github/workflows/release.yml` when a `v*` tag is pushed.
+- **Windows installer** is built manually from GitHub Actions → `Release Windows`.
+- **Portable web HTML** is built manually from GitHub Actions → `Release Web HTML`.
 - **The Linux AppImage is built manually** with `scripts/build-appimage.sh` (Docker) and uploaded to the same Release by hand.
 
 > The release workflow used to run a Windows + Ubuntu matrix that also produced the
-> `.deb` and `.AppImage`. As of v1.0.9 the matrix is **Windows-only** (commit `77ada76`),
-> so any Linux artifact has to be produced locally — see *Building the Linux AppImage* below.
+> `.deb` and `.AppImage`, then a Windows-only tag workflow. As of v1.0.12, pushing a tag
+> does **not** build any artifact automatically. Publish only the artifact that changed
+> and was validated.
 
 ## What gets produced
 
 | Artifact | Platform | Built by | Automatic? |
 |----------|----------|----------|------------|
-| `diveplay_<ver>_x64-setup.exe` | Windows installer (NSIS) | `tauri-action` on `windows-latest` | ✅ CI (tag push) |
-| `diveplay-web.html` | Single-file portable web player | `Copy-Item dist/index.html` step on the Windows runner | ✅ CI (tag push) |
+| `diveplay_<ver>_x64-setup.exe` | Windows installer (NSIS) | `Release Windows` workflow | ❌ manual dispatch |
+| `diveplay-web.html` | Single-file portable web player | `Release Web HTML` workflow | ❌ manual dispatch |
 | `diveplay_<ver>_amd64.AppImage` | Portable Linux | `scripts/build-appimage.sh` (Docker `ubuntu:22.04`) | ❌ manual |
 | `diveplay_<ver>_amd64.deb` | Debian/Ubuntu package | not currently produced (see *Building the .deb*) | ❌ manual / skipped |
 
@@ -41,24 +43,30 @@ Windows CI runner `tauri-action` only emits the targets valid for that OS (`nsis
 
 4. **Commit** the bump together with the feature/fix commits for the release (conventional-commit style).
 
-5. **Tag with the same version prefixed by `v`** and push — the tag is the trigger:
+5. **Tag with the same version prefixed by `v`** and push:
    ```bash
    git push origin main
    git tag -a v1.0.9 -m "Release v1.0.9"
    git push origin v1.0.9
    ```
-   A hyphenated tag (`v1.0.9-rc1`) is auto-marked **prerelease** via `contains(github.ref_name, '-')`.
+   A hyphenated tag (`v1.0.9-rc1`) should be treated as a prerelease in manual workflows.
 
-6. **Wait for CI** at <https://github.com/dougmb/diveplay/actions> (~5-8 min, Windows only now).
-   It attaches `diveplay_<ver>_x64-setup.exe` and `diveplay-web.html` to the Release.
+6. **Build only the artifacts that changed and were validated:**
+   - Windows: Actions → `Release Windows` → Run workflow → `tag_name=vX.Y.Z`
+   - Web HTML: Actions → `Release Web HTML` → Run workflow → `tag_name=vX.Y.Z`
+   - Linux AppImage: build locally with `./scripts/build-appimage.sh`
 
-7. **Build and upload the Linux AppImage manually** (see next section):
+7. **Create/update the GitHub Release and upload the Linux AppImage manually** when shipping Linux:
    ```bash
    ./scripts/build-appimage.sh
-   gh release upload v1.0.9 release-artifacts/diveplay_*_amd64.AppImage --clobber
+   gh release create v1.0.9 release-artifacts/diveplay_1.0.9_amd64.AppImage \
+     --title "DivePlay v1.0.9" \
+     --notes-file CHANGELOG-v1.0.9.md
+   # If the release already exists:
+   gh release upload v1.0.9 release-artifacts/diveplay_1.0.9_amd64.AppImage --clobber
    ```
 
-8. **Verify the Release** at <https://github.com/dougmb/diveplay/releases>: `.exe`, `diveplay-web.html`, and `.AppImage` attached; prerelease flag matches intent.
+8. **Verify the Release** at <https://github.com/dougmb/diveplay/releases>: only the intended artifacts are attached; prerelease flag matches intent.
 
 ## Building the Linux AppImage (manual)
 
@@ -118,27 +126,19 @@ The `.deb` declares `ffmpeg` as a dependency (`bundle.linux.deb.depends`) and re
 system ffmpeg at runtime — it does **not** need the software-Mesa workaround the AppImage uses,
 because it runs against the host's matching WebKitGTK/GL stack.
 
-## What the CI workflow does
+## What the manual workflows do
 
 ```
-v1.0.9 tag pushed
-  │
-  └── windows-latest runner ────────────────────────┐
-        1. checkout                                  │
-        2. setup-node@v4 (node 20)                   │
-        3. dtolnay/rust-toolchain@stable             │
-        4. npm install                               │
-        5. tauri-action (NO_STRIP=true) ──► .exe (NSIS) → uploaded to Release
-        6. Copy-Item dist/index.html dist/diveplay-web.html   (pwsh)
-        7. softprops/action-gh-release ──► diveplay-web.html → uploaded to Release
-                                                     │
-                                  GitHub Release ────┘
+Release Windows workflow
+  └── checkout tag → npm install → tauri-action → .exe uploaded to Release
+
+Release Web HTML workflow
+  └── checkout tag → npm install → npm run build → diveplay-web.html uploaded to Release
 ```
 
-`tauri-action` creates/edits the Release keyed by `tagName`; the second step appends the web
-HTML to the same Release. `NO_STRIP: "true"` is kept because `linuxdeploy`'s embedded `strip`
-chokes on the `.relr.dyn` ELF section emitted by newer toolchains (harmless on Windows, but the
-same flag is needed for the manual Linux build).
+Both workflows are `workflow_dispatch` only. Pushing a tag does not publish anything by itself.
+`NO_STRIP: "true"` is kept because it is also required by the manual Linux build and is harmless
+on Windows.
 
 ## Why certain things are the way they are
 

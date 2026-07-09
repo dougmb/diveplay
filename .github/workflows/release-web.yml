@@ -1,0 +1,47 @@
+name: Release Web HTML
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to build, e.g. v1.0.12'
+        required: true
+        type: string
+
+jobs:
+  build-web:
+    permissions:
+      contents: write
+
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Prepare Web Version
+        run: cp dist/index.html dist/diveplay-web.html
+
+      - name: Upload Web HTML to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/diveplay-web.html
+          tag_name: ${{ inputs.tag_name }}
+          name: DivePlay ${{ inputs.tag_name }}
+          body: Portable standalone web player build.
+          prerelease: ${{ contains(inputs.tag_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
