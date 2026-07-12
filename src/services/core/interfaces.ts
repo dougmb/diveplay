@@ -11,6 +11,7 @@ export interface IFileSystem {
 export interface PlaybackOptions {
     audioTrack?: number;
     transcode?: boolean;
+    transcodeMode?: 'remux' | 'audio' | 'full';
     startTime?: number;
 }
 

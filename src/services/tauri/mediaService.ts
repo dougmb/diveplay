@@ -16,6 +16,7 @@ export const tauriMediaService: IMediaService = {
                 const params = new URLSearchParams();
                 if (options?.audioTrack !== undefined) params.set('audio_track', options.audioTrack.toString());
                 if (options?.transcode) params.set('transcode', 'true');
+                if (options?.transcodeMode) params.set('mode', options.transcodeMode);
                 if (options?.startTime !== undefined && options.startTime > 0) {
                     params.set('ss', options.startTime.toString());
                 }

@@ -67,6 +67,7 @@ struct StreamParams {
     token: String,
     audio_track: Option<usize>,
     transcode: Option<bool>,
+    mode: Option<String>,
     ss: Option<f64>,
 }
 
@@ -75,12 +76,52 @@ struct AppState {
     stream_token: String,
 }
 
+fn parse_byte_range(range: &str, size: u64) -> Option<(u64, u64)> {
+    if size == 0 {
+        return None;
+    }
+
+    let spec = range.strip_prefix("bytes=")?.split(',').next()?.trim();
+    let (start_raw, end_raw) = spec.split_once('-')?;
+
+    if start_raw.is_empty() {
+        let suffix_len = end_raw.parse::<u64>().ok()?;
+        if suffix_len == 0 {
+            return None;
+        }
+        let start = size.saturating_sub(suffix_len);
+        return Some((start, size - 1));
+    }
+
+    let start = start_raw.parse::<u64>().ok()?;
+    if start >= size {
+        return None;
+    }
+
+    let end = if end_raw.is_empty() {
+        size - 1
+    } else {
+        end_raw.parse::<u64>().ok()?.min(size - 1)
+    };
+
+    if end < start {
+        return None;
+    }
+
+    Some((start, end))
+}
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[tauri::command]
 fn get_logs() -> Vec<String> {
     LOG_BUFFER.lock().map(|buf| buf.clone()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn log_event(message: String) {
+    app_log!("UI: {}", message);
 }
 
 #[tauri::command]
@@ -302,8 +343,9 @@ async fn stream_file(
     if should_transcode {
         let audio_idx = params.audio_track.unwrap_or(0);
         let start_time = params.ss.unwrap_or(0.0);
-        
-        app_log!("Transcoding requested for: {} (audio_track: {}, start: {})", path_str, audio_idx, start_time);
+        let mode = params.mode.as_deref().unwrap_or("full");
+
+        app_log!("Transcoding requested for: {} (audio_track: {}, start: {}, mode: {})", path_str, audio_idx, start_time, mode);
         
         let ffmpeg_path = match get_sidecar_path(&state.handle, "ffmpeg") {
             Ok(p) => p,
@@ -324,26 +366,49 @@ async fn stream_file(
 
         cmd.arg("-y")
            .arg("-hide_banner")
-           .arg("-loglevel").arg("info");
+           .arg("-loglevel").arg("warning")
+           .arg("-fflags").arg("+genpts+igndts+discardcorrupt")
+           .arg("-err_detect").arg("ignore_err");
 
         if start_time > 0.0 {
             cmd.arg("-ss").arg(start_time.to_string());
         }
 
         cmd.arg("-i").arg(&path_str)
-           .arg("-map").arg("0:v:0")
-           .arg("-map").arg(format!("0:a:{}", audio_idx))
-           .arg("-c:v").arg("libx264")
-           .arg("-pix_fmt").arg("yuv420p")
-           .arg("-preset").arg("ultrafast")
-           .arg("-tune").arg("zerolatency")
-           .arg("-crf").arg("26")
-           .arg("-g").arg("48")
+           .arg("-map").arg("0:v:0?")
+           .arg("-map").arg(format!("0:a:{}?", audio_idx))
            .arg("-sn")
-           .arg("-c:a").arg("aac")
-           .arg("-ac").arg("2")
-           .arg("-b:a").arg("128k")
-           .arg("-f").arg("mp4")
+           .arg("-dn");
+
+        match mode {
+            "remux" => {
+                cmd.arg("-c:v").arg("copy")
+                   .arg("-c:a").arg("copy");
+            }
+            "audio" => {
+                cmd.arg("-c:v").arg("copy")
+                   .arg("-c:a").arg("aac")
+                   .arg("-ac").arg("2")
+                   .arg("-b:a").arg("160k");
+            }
+            _ => {
+                cmd.arg("-c:v").arg("libx264")
+                   .arg("-pix_fmt").arg("yuv420p")
+                   .arg("-preset").arg("ultrafast")
+                   .arg("-tune").arg("zerolatency")
+                   .arg("-crf").arg("26")
+                   .arg("-g").arg("48")
+                   .arg("-c:a").arg("aac")
+                   .arg("-ac").arg("2")
+                   .arg("-b:a").arg("160k");
+            }
+        }
+
+        cmd.arg("-f").arg("mp4")
+           .arg("-avoid_negative_ts").arg("make_zero")
+           .arg("-muxdelay").arg("0")
+           .arg("-flush_packets").arg("1")
+           .arg("-max_muxing_queue_size").arg("2048")
            .arg("-movflags").arg("frag_keyframe+empty_moov+default_base_moof")
            .arg("pipe:1");
 
@@ -404,34 +469,34 @@ async fn stream_file(
     let range = req.headers().get(header::RANGE).and_then(|h| h.to_str().ok());
 
     if let Some(range) = range {
-        if let Some(r) = range.strip_prefix("bytes=") {
-            let parts: Vec<&str> = r.split('-').collect();
-            if parts.len() == 2 {
-                let start = parts[0].parse::<u64>().unwrap_or(0);
-                let end = parts[1].parse::<u64>().unwrap_or(size - 1);
-                let end = if end >= size { size - 1 } else { end };
+        if let Some((start, end)) = parse_byte_range(range, size) {
+            let content_length = end - start + 1;
+            use std::io::SeekFrom;
+            use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-                if start < size {
-                    let content_length = end - start + 1;
-                    use std::io::SeekFrom;
-                    use tokio::io::AsyncSeekExt;
-                    
-                    let mut file = file;
-                    file.seek(SeekFrom::Start(start)).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                    
-                    let stream = ReaderStream::with_capacity(file, 64 * 1024);
-                    let body = Body::from_stream(stream);
+            let mut file = file;
+            file.seek(SeekFrom::Start(start)).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-                    return Response::builder()
-                        .status(StatusCode::PARTIAL_CONTENT)
-                        .header(header::CONTENT_TYPE, mime)
-                        .header(header::CONTENT_LENGTH, content_length)
-                        .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", start, end, size))
-                        .header(header::ACCEPT_RANGES, "bytes")
-                        .body(body)
-                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
-                }
-            }
+            let stream = ReaderStream::with_capacity(file.take(content_length), 64 * 1024);
+            let body = Body::from_stream(stream);
+
+            return Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(header::CONTENT_TYPE, mime)
+                .header(header::CONTENT_LENGTH, content_length)
+                .header(header::CONTENT_RANGE, format!("bytes {}-{}/{}", start, end, size))
+                .header(header::ACCEPT_RANGES, "bytes")
+                .body(body)
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+        }
+
+        if range.starts_with("bytes=") {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{}", size))
+                .header(header::ACCEPT_RANGES, "bytes")
+                .body(Body::empty())
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -509,7 +574,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_streaming_url, get_media_info, get_logs, clear_logs])
+        .invoke_handler(tauri::generate_handler![get_streaming_url, get_media_info, get_logs, clear_logs, log_event])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

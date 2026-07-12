@@ -8,11 +8,23 @@ import { loadAppSettings } from '../services/db';
 import { parseSubtitleCues, getActiveCue, decodeSubtitleBytes } from '../utils/subtitleParser';
 import type { SubtitleCue } from '../utils/subtitleParser';
 import type { MediaFile, MediaInfo, AppSettings } from '../types';
+import type { Window as TauriWindow } from '@tauri-apps/api/window';
 
 interface SubtitleTrack {
     name: string;
     cues: SubtitleCue[];
     source: 'local' | 'url' | 'opensub';
+}
+
+type TranscodeMode = 'direct' | 'remux' | 'audio' | 'full';
+
+// Mirror playback diagnostics into the native log ring buffer (L key) so field
+// reports from installed builds include the frontend's view of what happened.
+function logNative(message: string) {
+    if (!isTauri()) return;
+    getTauriAPI()
+        .then(api => api?.invoke('log_event', { message }))
+        .catch(() => {});
 }
 
 export default function Player() {
@@ -36,6 +48,8 @@ export default function Player() {
     const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
     const subtitleMenuRef = useRef<HTMLDivElement | null>(null);
     const [transcodeSeekTime, setTranscodeSeekTime] = useState<number>(0);
+    const [forcedTranscodeMode, setForcedTranscodeMode] = useState<Exclude<TranscodeMode, 'direct'> | null>(null);
+    const [streamReloadNonce, setStreamReloadNonce] = useState(0);
     const [skipCountdown, setSkipCountdown] = useState<number | null>(null);
     const [seekFeedback, setSeekFeedback] = useState<{ dir: 'fwd' | 'bwd'; seconds: number; n: number } | null>(null);
     const [volumeFeedback, setVolumeFeedback] = useState<{ pct: number; n: number } | null>(null);
@@ -49,10 +63,33 @@ export default function Player() {
     const seekFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const volumeFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const pendingMediaErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingTranscodeSeekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingTranscodeSeekTimeRef = useRef<number | null>(null);
+    const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const recoveryClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const tauriWindowRef = useRef<TauriWindow | null>(null);
+    const isRecoveringRef = useRef(false);
+    const intentionalPauseRef = useRef(false);
+    const intentionalPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const playbackWatchRef = useRef({ position: 0, updatedAt: 0 });
+    const loadStallTicksRef = useRef(0);
+    const recoveryAttemptsRef = useRef({ fileKey: '', count: 0, lastAt: 0, lastPosition: 0 });
     const holdAccumRef = useRef(0);
     const holdFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const seekContextRef = useRef<{ mediaInfo: MediaInfo | null; transcodeSeekTime: number; currentFile: MediaFile | null; duration: number }>({
-        mediaInfo: null, transcodeSeekTime: 0, currentFile: null, duration: 0,
+    const seekContextRef = useRef<{
+        mediaInfo: MediaInfo | null;
+        transcodeSeekTime: number;
+        currentFile: MediaFile | null;
+        duration: number;
+        selectedAudioTrack: number;
+        forcedTranscodeMode: Exclude<TranscodeMode, 'direct'> | null;
+    }>({
+        mediaInfo: null,
+        transcodeSeekTime: 0,
+        currentFile: null,
+        duration: 0,
+        selectedAudioTrack: 0,
+        forcedTranscodeMode: null,
     });
     // True while a file is loading (between effect start and loadedmetadata) — suppresses
     // spurious 'pause' DOM events that fire during src transitions.
@@ -67,6 +104,17 @@ export default function Player() {
         }
         setMediaError(null);
         setSkipCountdown(null);
+    }, []);
+
+    const clearScheduledRecovery = useCallback(() => {
+        if (recoveryTimerRef.current) {
+            clearTimeout(recoveryTimerRef.current);
+            recoveryTimerRef.current = null;
+        }
+        if (recoveryClearTimerRef.current) {
+            clearTimeout(recoveryClearTimerRef.current);
+            recoveryClearTimerRef.current = null;
+        }
     }, []);
 
     // Load app settings (API keys, subtitle language) once on mount
@@ -85,26 +133,57 @@ export default function Player() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [mediaInfo]);
 
+    useEffect(() => {
+        const audioStreams = mediaInfo?.streams.filter(s => s.codec_type === 'audio') ?? [];
+        if (audioStreams.length > 0 && selectedAudioTrack >= audioStreams.length) {
+            setSelectedAudioTrack(0);
+        }
+    }, [mediaInfo, selectedAudioTrack]);
+
     // Clear media error and skip countdown when file changes
     useEffect(() => {
+        clearScheduledRecovery();
         clearPlaybackError();
         setMediaInfo(null);
         setSelectedAudioTrack(0);
         setShowTrackMenu(false);
         setTranscodeSeekTime(0);
+        setForcedTranscodeMode(null);
+        setStreamReloadNonce(n => n + 1);
         setHasAudioTrack(true);
         setShowNoAudioAlert(false);
         setSelectedSubtitleTrack(0);
         isEndedRef.current = false;
-    }, [currentFile, clearPlaybackError]);
+        isRecoveringRef.current = false;
+        intentionalPauseRef.current = false;
+        if (intentionalPauseTimerRef.current) {
+            clearTimeout(intentionalPauseTimerRef.current);
+            intentionalPauseTimerRef.current = null;
+        }
+        // Drop any seek still pending from the previous file
+        if (pendingTranscodeSeekTimerRef.current) {
+            clearTimeout(pendingTranscodeSeekTimerRef.current);
+            pendingTranscodeSeekTimerRef.current = null;
+        }
+        pendingTranscodeSeekTimeRef.current = null;
+        playbackWatchRef.current = { position: 0, updatedAt: Date.now() };
+        recoveryAttemptsRef.current = { fileKey: '', count: 0, lastAt: 0, lastPosition: 0 };
+    }, [currentFile, clearPlaybackError, clearScheduledRecovery]);
 
     useEffect(() => {
         return () => {
             if (pendingMediaErrorTimerRef.current) {
                 clearTimeout(pendingMediaErrorTimerRef.current);
             }
+            if (pendingTranscodeSeekTimerRef.current) {
+                clearTimeout(pendingTranscodeSeekTimerRef.current);
+            }
+            if (intentionalPauseTimerRef.current) {
+                clearTimeout(intentionalPauseTimerRef.current);
+            }
+            clearScheduledRecovery();
         };
-    }, []);
+    }, [clearScheduledRecovery]);
 
     // Auto-skip countdown on media error
     useEffect(() => {
@@ -116,6 +195,172 @@ export default function Player() {
         const timer = setTimeout(() => setSkipCountdown(c => c !== null ? c - 1 : null), 1000);
         return () => clearTimeout(timer);
     }, [skipCountdown, player]);
+
+    const recoverPlayback = useCallback((reason: string) => {
+        const el = mediaRef.current;
+        // Forced reasons mean the current load itself is broken, so they bypass
+        // the in-progress-load guards instead of being suppressed by them.
+        const isForcedRecovery = reason.startsWith('media-error') || reason === 'load-stall';
+        if (!currentFile || !blobUrl || mediaError || skipCountdown !== null) return;
+        if (isLoadingRef.current && !isForcedRecovery) return;
+        if (isForcedRecovery) {
+            isLoadingRef.current = false;
+            isRecoveringRef.current = false;
+        }
+
+        const fileKey = currentFile.nativePath || currentFile.relativePath || currentFile.name;
+        const currentElementTime = el && Number.isFinite(el.currentTime) ? el.currentTime : 0;
+        const actualPosition = Math.max(0, transcodeSeekTime + currentElementTime, player.position || 0);
+
+        if (duration > 0 && actualPosition >= duration - 1.25) {
+            isEndedRef.current = true;
+            player.next();
+            return;
+        }
+
+        const now = Date.now();
+        const attempts = recoveryAttemptsRef.current;
+        const isSameRecoveryWindow =
+            attempts.fileKey === fileKey &&
+            now - attempts.lastAt < 45_000 &&
+            Math.abs(actualPosition - attempts.lastPosition) < 12;
+
+        const nextCount = isSameRecoveryWindow ? attempts.count + 1 : 1;
+        recoveryAttemptsRef.current = {
+            fileKey,
+            count: nextCount,
+            lastAt: now,
+            lastPosition: actualPosition,
+        };
+
+        if (nextCount > 7) {
+            isRecoveringRef.current = false;
+            isLoadingRef.current = false;
+            logNative(`recovery gave up after ${nextCount - 1} attempts near ${actualPosition.toFixed(1)}s (${reason})`);
+            setMediaError('Playback stopped near a damaged segment. Automatic recovery was attempted but did not succeed.');
+            setSkipCountdown(8);
+            return;
+        }
+
+        const skipSeconds = recoverySkipSeconds(nextCount);
+        const recoveryTarget = clampPlaybackTime(actualPosition + skipSeconds, duration);
+
+        if (duration > 0 && recoveryTarget >= duration - 0.25) {
+            isEndedRef.current = true;
+            player.next();
+            return;
+        }
+
+        const baseMode = getTranscodeMode(mediaInfo, currentFile.name, selectedAudioTrack);
+        const activeMode = forcedTranscodeMode ?? baseMode;
+        const shouldTranscode = capabilities.canTranscode && activeMode !== 'direct';
+        const shouldForceFullTranscode =
+            capabilities.canTranscode &&
+            activeMode !== 'full' &&
+            (isForcedRecovery || (activeMode === 'direct' && nextCount >= 2) || nextCount >= 3);
+        const nextForcedMode = shouldForceFullTranscode ? 'full' : forcedTranscodeMode;
+
+        const recoveryMsg =
+            `Recovering playback after ${reason}; attempt ${nextCount}, jumping to ${recoveryTarget.toFixed(2)}s` +
+            (nextForcedMode === 'full' && activeMode !== 'full' ? ' with full transcode' : '');
+        console.warn(recoveryMsg);
+        logNative(recoveryMsg);
+
+        clearPlaybackError();
+        player.setPosition(recoveryTarget);
+        isRecoveringRef.current = true;
+
+        if (shouldTranscode || nextForcedMode) {
+            isLoadingRef.current = true;
+            if (el) {
+                el.pause();
+                el.removeAttribute('src');
+                el.load();
+            }
+            if (nextForcedMode && nextForcedMode !== forcedTranscodeMode) {
+                setForcedTranscodeMode(nextForcedMode);
+            }
+            setTranscodeSeekTime(recoveryTarget);
+            setStreamReloadNonce(n => n + 1);
+            return;
+        }
+
+        if (!el) {
+            isRecoveringRef.current = false;
+            return;
+        }
+
+        try {
+            el.currentTime = recoveryTarget;
+            if (isPlaying) {
+                el.play().catch((err: unknown) => {
+                    if (!(err instanceof DOMException && err.name === 'AbortError')) {
+                        console.warn('Playback recovery play() failed:', err);
+                    }
+                });
+            }
+        } catch (err) {
+            console.warn('Direct seek recovery failed:', err);
+            if (capabilities.canTranscode) {
+                isLoadingRef.current = true;
+                el.pause();
+                el.removeAttribute('src');
+                el.load();
+                setForcedTranscodeMode('full');
+                setTranscodeSeekTime(recoveryTarget);
+                setStreamReloadNonce(n => n + 1);
+                return;
+            }
+        }
+
+        if (recoveryClearTimerRef.current) clearTimeout(recoveryClearTimerRef.current);
+        recoveryClearTimerRef.current = setTimeout(() => {
+            isRecoveringRef.current = false;
+            recoveryClearTimerRef.current = null;
+        }, 2000);
+    }, [
+        blobUrl,
+        clearPlaybackError,
+        currentFile,
+        duration,
+        forcedTranscodeMode,
+        isPlaying,
+        mediaError,
+        mediaInfo,
+        player,
+        selectedAudioTrack,
+        skipCountdown,
+        transcodeSeekTime,
+    ]);
+
+    const schedulePlaybackRecovery = useCallback((reason: string, delayMs = 0) => {
+        if (recoveryTimerRef.current) return;
+        if (isRecoveringRef.current && !reason.startsWith('media-error') && reason !== 'load-stall') return;
+        recoveryTimerRef.current = setTimeout(() => {
+            recoveryTimerRef.current = null;
+            recoverPlayback(reason);
+        }, delayMs);
+    }, [recoverPlayback]);
+
+    // Apply a seek on a transcoded/remuxed stream: tear down the current stream
+    // and reload from the target time. Everything must update in ONE batch —
+    // if position and transcodeSeekTime land in different renders, the position
+    // sync effect runs against the half-updated pair and issues a bogus deep
+    // seek into the (non-seekable) new stream, wedging playback.
+    const applyTranscodeSeek = useCallback((rawTime: number) => {
+        const el = mediaRef.current;
+        isLoadingRef.current = true;
+        clearPlaybackError();
+        if (el) {
+            el.pause();
+            el.removeAttribute('src');
+            el.load();
+        }
+        pendingTranscodeSeekTimeRef.current = null;
+        player.setPosition(rawTime);
+        setTranscodeSeekTime(rawTime);
+        setStreamReloadNonce(n => n + 1);
+    }, [clearPlaybackError, player]);
 
     // Called when the browser can't decode the file
     const handleMediaError = useCallback((e: React.SyntheticEvent<HTMLMediaElement>) => {
@@ -149,19 +394,11 @@ export default function Player() {
                 return;
             }
 
-            console.error('Media error code:', currentError, 'Source:', currentSrc);
-            if (capabilities.hasNativeLogs) {
-                setMediaError(
-                    'Failed to play this file. FFmpeg transcoding may have failed or the file is inaccessible.'
-                );
-            } else {
-                setMediaError(
-                    'Format not supported by your browser. Supported: .mp4, .webm (video) · .mp3, .aac, .flac, .wav, .ogg, .m4a (audio).'
-                );
-            }
-            setSkipCountdown(8);
+            console.warn('Media error code:', currentError, 'Source:', currentSrc);
+            logNative(`media error code ${currentError}`);
+            schedulePlaybackRecovery(`media-error-${currentError}`, 0);
         }, 1500);
-    }, [blobUrl]);
+    }, [blobUrl, schedulePlaybackRecovery]);
 
     // Load file
     useEffect(() => {
@@ -183,16 +420,27 @@ export default function Player() {
                     if (!cancelled) setMediaInfo(info);
                 }
 
-                const shouldTranscode = capabilities.canTranscode && needsTranscoding(info, currentFile.name);
+                let transcodeMode = forcedTranscodeMode ?? getTranscodeMode(info, currentFile.name, selectedAudioTrack);
+                // 'audio' mode (copy video + re-encode audio) cannot seek: ffmpeg's
+                // input seek lands the copied video at an unpredictable earlier
+                // keyframe while trimming re-encoded audio exactly at -ss, opening
+                // the stream with seconds of silent video. Re-encode both tracks
+                // when starting mid-file so they stay aligned. (remux copies both
+                // tracks, so they start together and it can keep using -ss.)
+                if (transcodeMode === 'audio' && transcodeSeekTime > 0) {
+                    transcodeMode = 'full';
+                }
+                const shouldTranscode = capabilities.canTranscode && transcodeMode !== 'direct';
 
                 const { url } = await ensurePlayable(currentFile, {
                     transcode: shouldTranscode,
+                    transcodeMode: transcodeMode === 'direct' ? undefined : transcodeMode,
                     audioTrack: selectedAudioTrack,
                     startTime: transcodeSeekTime
                 });
 
                 if (cancelled) {
-                    URL.revokeObjectURL(url);
+                    revokeMediaUrl(url);
                     return;
                 }
 
@@ -229,6 +477,8 @@ export default function Player() {
             } catch (err) {
                 if (!cancelled) {
                     console.error('Failed to load file:', err);
+                    isLoadingRef.current = false;
+                    isRecoveringRef.current = false;
                     setMediaError('Failed to load file. The format may be unsupported.');
                 }
             }
@@ -238,12 +488,12 @@ export default function Player() {
             cancelled = true;
             isLoadingRef.current = false;
             setBlobUrl((prev) => {
-                if (prev) URL.revokeObjectURL(prev);
+                if (prev) revokeMediaUrl(prev);
                 return null;
             });
             setSubtitleTracks([]);
         };
-    }, [currentFile, selectedAudioTrack, transcodeSeekTime]);
+    }, [currentFile, forcedTranscodeMode, selectedAudioTrack, streamReloadNonce, transcodeSeekTime]);
 
     // Sync play/pause state
     useEffect(() => {
@@ -252,12 +502,26 @@ export default function Player() {
         if (isPlaying) {
             el.play().catch((err: unknown) => {
                 // AbortError = play() interrupted by a new load — loadedmetadata will retry
-                if (err instanceof DOMException && err.name !== 'AbortError') {
-                    player.setIsPlaying(false);
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                if (err instanceof DOMException && err.name === 'NotAllowedError') {
+                    player.setIsPlaying(false); // autoplay blocked (web) — reflect real state
+                    return;
                 }
+                // NotSupportedError etc.: the source failed mid-transition. Keep the
+                // play intent so the media-error recovery resumes instead of leaving
+                // the player stuck paused after it reloads the stream.
+                logNative(`play() rejected: ${err instanceof DOMException ? err.name : String(err)}`);
             });
         } else {
+            if (intentionalPauseTimerRef.current) {
+                clearTimeout(intentionalPauseTimerRef.current);
+            }
+            intentionalPauseRef.current = true;
             el.pause();
+            intentionalPauseTimerRef.current = setTimeout(() => {
+                intentionalPauseRef.current = false;
+                intentionalPauseTimerRef.current = null;
+            }, 500);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isPlaying, blobUrl]);
@@ -267,19 +531,24 @@ export default function Player() {
         const el = mediaRef.current;
         if (!el) return;
         el.volume = settings.volume;
+        el.muted = isMuted;
         el.playbackRate = settings.playbackRate;
-    }, [settings.volume, settings.playbackRate]);
+    }, [isMuted, settings.volume, settings.playbackRate]);
 
     // Sync position
     useEffect(() => {
         const el = mediaRef.current;
         if (!el || !blobUrl) return;
+        // While a (re)load is in flight the element/src pair is transitional —
+        // seeking it here would set a bogus default playback position on the
+        // incoming stream. handleLoadedMetadata positions the new stream instead.
+        if (isLoadingRef.current || pendingTranscodeSeekTimeRef.current !== null) return;
 
         // If transcoding, the element's 0 is actually transcodeSeekTime
         const targetTime = Math.max(0, position - transcodeSeekTime);
 
         if (position > 0 && Math.abs(el.currentTime - targetTime) > 1.5) {
-            el.currentTime = targetTime;
+            el.currentTime = clampPlaybackTime(targetTime, finiteMediaTime(el.duration));
             if (isPlaying) {
                 el.play().catch(() => { /* autoplay blocked */ });
             }
@@ -298,14 +567,6 @@ export default function Player() {
         }, 300);
     }, [isPlaying, player]);
 
-    const handleContainerDoubleClick = useCallback(() => {
-        if (clickTimerRef.current) {
-            clearTimeout(clickTimerRef.current);
-            clickTimerRef.current = null;
-        }
-        toggleFullscreen();
-    }, []);
-
     // Auto-hide controls
     const resetHideTimer = useCallback(() => {
         setShowControls(true);
@@ -323,10 +584,26 @@ export default function Player() {
         setIsMuted(!isMuted);
     };
 
-    const toggleFullscreen = async () => {
+    const getNativeWindow = useCallback(async () => {
+        if (!isTauri()) return null;
+        if (tauriWindowRef.current) return tauriWindowRef.current;
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        tauriWindowRef.current = getCurrentWindow();
+        return tauriWindowRef.current;
+    }, []);
+
+    const toggleFullscreen = useCallback(async () => {
         const container = containerRef.current;
         if (!container) return;
         try {
+            const nativeWindow = await getNativeWindow();
+            if (nativeWindow) {
+                const next = !(await nativeWindow.isFullscreen());
+                await nativeWindow.setFullscreen(next);
+                setIsFullscreen(next);
+                return;
+            }
+
             if (document.fullscreenElement) {
                 await document.exitFullscreen();
             } else {
@@ -334,14 +611,54 @@ export default function Player() {
             }
         } catch (err) {
             console.warn('Fullscreen toggle failed:', err);
+            logNative(`fullscreen toggle failed: ${String(err)}`);
         }
-    };
+    }, [getNativeWindow]);
+
+    // Native window fullscreen doesn't exit on Escape by itself (unlike the DOM
+    // fullscreen API), so handle it explicitly.
+    const exitFullscreenIfActive = useCallback(async () => {
+        try {
+            const win = await getNativeWindow();
+            if (win && await win.isFullscreen()) {
+                await win.setFullscreen(false);
+                setIsFullscreen(false);
+            }
+        } catch { /* ignore */ }
+    }, [getNativeWindow]);
+
+    const handleContainerDoubleClick = useCallback(() => {
+        if (clickTimerRef.current) {
+            clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+        }
+        toggleFullscreen();
+    }, [toggleFullscreen]);
 
     useEffect(() => {
+        let cancelled = false;
+        let unlistenResize: (() => void) | undefined;
+
+        if (isTauri()) {
+            getNativeWindow()
+                .then(async (win) => {
+                    if (!win || cancelled) return;
+                    setIsFullscreen(await win.isFullscreen());
+                    unlistenResize = await win.onResized(async () => {
+                        if (!cancelled) setIsFullscreen(await win.isFullscreen());
+                    });
+                })
+                .catch((err) => console.warn('Failed to bind native fullscreen state:', err));
+        }
+
         const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
         document.addEventListener('fullscreenchange', onFsChange);
-        return () => document.removeEventListener('fullscreenchange', onFsChange);
-    }, []);
+        return () => {
+            cancelled = true;
+            if (unlistenResize) unlistenResize();
+            document.removeEventListener('fullscreenchange', onFsChange);
+        };
+    }, [getNativeWindow]);
 
     // Close subtitle menu on outside click
     useEffect(() => {
@@ -377,19 +694,16 @@ export default function Player() {
             const c = seekContextRef.current;
             const el = mediaRef.current;
             const actualPos = c.transcodeSeekTime + (el?.currentTime ?? 0);
-            const newTime = Math.max(0, Math.min(c.duration || 0, actualPos + accum));
-            isLoadingRef.current = true;
-            clearPlaybackError();
-            if (el) { el.pause(); el.src = ''; el.load(); }
-            player.setPosition(newTime);
-            setTranscodeSeekTime(newTime);
+            const durationLimit = finiteMediaTime(c.duration) ?? finiteMediaTime(el?.duration);
+            applyTranscodeSeek(clampPlaybackTime(actualPos + accum, durationLimit));
         };
 
         const seekBy = (delta: number) => {
             const c = seekContextRef.current;
             const el = mediaRef.current;
             showSeekFb(delta > 0 ? 'fwd' : 'bwd');
-            const shouldTranscode = capabilities.canTranscode && needsTranscoding(c.mediaInfo, c.currentFile?.name ?? '');
+            const transcodeMode = c.forcedTranscodeMode ?? getTranscodeMode(c.mediaInfo, c.currentFile?.name ?? '', c.selectedAudioTrack);
+            const shouldTranscode = capabilities.canTranscode && transcodeMode !== 'direct';
             if (shouldTranscode) {
                 holdAccumRef.current += delta;
                 if (holdFlushTimerRef.current) clearTimeout(holdFlushTimerRef.current);
@@ -401,7 +715,7 @@ export default function Player() {
                 }, 350);
             } else {
                 if (!el) return;
-                el.currentTime = Math.max(0, Math.min(el.duration || 0, el.currentTime + delta));
+                el.currentTime = clampPlaybackTime(el.currentTime + delta, finiteMediaTime(el.duration));
             }
         };
 
@@ -450,6 +764,9 @@ export default function Player() {
                     e.preventDefault();
                     toggleMute();
                     break;
+                case 'Escape':
+                    void exitFullscreenIfActive();
+                    break;
             }
         };
 
@@ -489,8 +806,21 @@ export default function Player() {
         if (pendingMediaErrorTimerRef.current || mediaError || skipCountdown !== null) clearPlaybackError();
         
         // If we are transcoding, the actual position is the seek offset + current video time
+        if (pendingTranscodeSeekTimeRef.current !== null) return;
         const actualPosition = transcodeSeekTime + el.currentTime;
         player.setPosition(actualPosition);
+        playbackWatchRef.current = { position: actualPosition, updatedAt: Date.now() };
+        isRecoveringRef.current = false;
+
+        const attempts = recoveryAttemptsRef.current;
+        if (attempts.count > 0 && Math.abs(actualPosition - attempts.lastPosition) > 8) {
+            recoveryAttemptsRef.current = {
+                fileKey: currentFile?.nativePath || currentFile?.relativePath || currentFile?.name || '',
+                count: 0,
+                lastAt: 0,
+                lastPosition: actualPosition,
+            };
+        }
 
         // Auto-advance if we're at the end (for streams that don't trigger onEnded)
         if (duration > 0 && actualPosition >= duration - 0.5 && !isEndedRef.current) {
@@ -501,6 +831,7 @@ export default function Player() {
 
     const handleLoadedMetadata = () => {
         isLoadingRef.current = false;
+        isRecoveringRef.current = false;
         clearPlaybackError();
         const el = mediaRef.current;
         if (!el) return;
@@ -511,18 +842,21 @@ export default function Player() {
             if (!isNaN(dur) && dur > 0) {
                 player.setDuration(dur);
             } else {
-                player.setDuration(el.duration);
+                const mediaDuration = finiteMediaTime(el.duration);
+                if (mediaDuration !== null) player.setDuration(mediaDuration);
             }
         } else {
             // If transcoding, the el.duration will only show the duration from the seek point to end
             // so we should only trust it if not transcoding or if we don't have mediaInfo
             const isTranscoding = transcodeSeekTime > 0;
             if (!isTranscoding) {
-                player.setDuration(el.duration);
+                const mediaDuration = finiteMediaTime(el.duration);
+                if (mediaDuration !== null) player.setDuration(mediaDuration);
             }
         }
 
         el.volume = settings.volume;
+        el.muted = isMuted;
         el.playbackRate = settings.playbackRate;
 
         // Audio track detection — prefer mediaInfo (Tauri) over the audioTracks API
@@ -547,18 +881,31 @@ export default function Player() {
         }
 
         if (position > 0) {
-            el.currentTime = Math.max(0, position - transcodeSeekTime);
+            el.currentTime = clampPlaybackTime(position - transcodeSeekTime, finiteMediaTime(el.duration));
         }
+        playbackWatchRef.current = {
+            position: Math.max(0, transcodeSeekTime + (Number.isFinite(el.currentTime) ? el.currentTime : 0)),
+            updatedAt: Date.now(),
+        };
         if (isPlaying) {
             el.play().catch((err: unknown) => {
-                if (err instanceof DOMException && err.name !== 'AbortError') {
+                if (err instanceof DOMException && err.name === 'AbortError') return;
+                if (err instanceof DOMException && err.name === 'NotAllowedError') {
                     player.setIsPlaying(false);
+                    return;
                 }
+                logNative(`play() after loadedmetadata rejected: ${err instanceof DOMException ? err.name : String(err)}`);
             });
         }
     };
 
     const handleEnded = () => {
+        const el = mediaRef.current;
+        const actualPosition = transcodeSeekTime + (el && Number.isFinite(el.currentTime) ? el.currentTime : 0);
+        if (duration > 0 && actualPosition < duration - 2 && !isEndedRef.current) {
+            schedulePlaybackRecovery('premature-ended', 0);
+            return;
+        }
         isEndedRef.current = true;
         player.next();
     };
@@ -568,10 +915,38 @@ export default function Player() {
         // 1. blobUrl=null  → src just cleared during cleanup
         // 2. isLoadingRef  → file is still loading (metadata not yet received)
         if (!blobUrl || isLoadingRef.current) return;
+        if (!isEndedRef.current && isPlaying && !intentionalPauseRef.current) {
+            logNative('unexpected pause event; scheduling recovery');
+            schedulePlaybackRecovery('unexpected-pause', 500);
+            return;
+        }
         if (!isEndedRef.current) {
             player.setIsPlaying(false);
         }
         isEndedRef.current = false;
+    };
+
+    const handlePlaybackWaiting = (reason: string) => {
+        if (!blobUrl || !isPlaying || isLoadingRef.current || isEndedRef.current) return;
+        schedulePlaybackRecovery(reason, 5000);
+    };
+
+    const handlePlaybackResumed = () => {
+        clearScheduledRecovery();
+        isRecoveringRef.current = false;
+        intentionalPauseRef.current = false;
+        if (intentionalPauseTimerRef.current) {
+            clearTimeout(intentionalPauseTimerRef.current);
+            intentionalPauseTimerRef.current = null;
+        }
+        const el = mediaRef.current;
+        if (el) {
+            playbackWatchRef.current = {
+                position: transcodeSeekTime + (Number.isFinite(el.currentTime) ? el.currentTime : 0),
+                updatedAt: Date.now(),
+            };
+        }
+        player.setIsPlaying(true);
     };
 
     const handleProgressClick = (e: React.MouseEvent) => {
@@ -580,19 +955,27 @@ export default function Player() {
         const bar = progressRef.current;
         if (!el || !bar) return;
         const rect = bar.getBoundingClientRect();
-        const pct = (e.clientX - rect.left) / rect.width;
-        const newTime = pct * (duration || 0);
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        const newTime = clampPlaybackTime(pct * (duration || 0), duration);
 
-        const shouldTranscode = capabilities.canTranscode && needsTranscoding(mediaInfo, currentFile?.name ?? '');
+        const transcodeMode = forcedTranscodeMode ?? getTranscodeMode(mediaInfo, currentFile?.name ?? '', selectedAudioTrack);
+        const shouldTranscode = capabilities.canTranscode && transcodeMode !== 'direct';
 
         if (shouldTranscode) {
+            // Debounce rapid clicks on the bar; only the last target loads.
+            pendingTranscodeSeekTimeRef.current = newTime;
             isLoadingRef.current = true;
             clearPlaybackError();
             el.pause();
-            el.src = '';
-            el.load();
             player.setPosition(newTime);
-            setTranscodeSeekTime(newTime);
+            if (pendingTranscodeSeekTimerRef.current) {
+                clearTimeout(pendingTranscodeSeekTimerRef.current);
+            }
+            pendingTranscodeSeekTimerRef.current = setTimeout(() => {
+                pendingTranscodeSeekTimerRef.current = null;
+                const seekTime = pendingTranscodeSeekTimeRef.current;
+                if (seekTime !== null) applyTranscodeSeek(seekTime);
+            }, 180);
         } else {
             el.currentTime = newTime;
             player.setPosition(newTime);
@@ -602,6 +985,49 @@ export default function Player() {
             }
         }
     };
+
+    useEffect(() => {
+        if (!blobUrl || !isPlaying || mediaError || skipCountdown !== null) return;
+
+        const initialEl = mediaRef.current;
+        playbackWatchRef.current = {
+            position: transcodeSeekTime + (initialEl && Number.isFinite(initialEl.currentTime) ? initialEl.currentTime : 0),
+            updatedAt: Date.now(),
+        };
+        loadStallTicksRef.current = 0;
+
+        const timer = setInterval(() => {
+            const el = mediaRef.current;
+            if (isLoadingRef.current) {
+                // A (re)load that produces no metadata for ~15s is stuck — likely a
+                // dead stream. Force a recovery reload instead of freezing forever.
+                loadStallTicksRef.current += 1;
+                if (loadStallTicksRef.current >= 10) {
+                    loadStallTicksRef.current = 0;
+                    logNative('stream load stalled for ~15s; forcing recovery');
+                    schedulePlaybackRecovery('load-stall', 0);
+                }
+                return;
+            }
+            loadStallTicksRef.current = 0;
+            if (!el || isRecoveringRef.current || el.paused || el.ended || el.seeking) return;
+
+            const actualPosition = transcodeSeekTime + (Number.isFinite(el.currentTime) ? el.currentTime : 0);
+            if (duration > 0 && actualPosition >= duration - 2) return;
+
+            const watch = playbackWatchRef.current;
+            if (Math.abs(actualPosition - watch.position) > 0.25) {
+                playbackWatchRef.current = { position: actualPosition, updatedAt: Date.now() };
+                return;
+            }
+
+            if (Date.now() - watch.updatedAt > 7000) {
+                schedulePlaybackRecovery('watchdog-stall', 0);
+            }
+        }, 1500);
+
+        return () => clearInterval(timer);
+    }, [blobUrl, duration, isPlaying, mediaError, schedulePlaybackRecovery, skipCountdown, transcodeSeekTime]);
 
     // Active subtitle cue — applied at query time so offset changes don't require re-parse
     const activeCue = useMemo(() => {
@@ -756,9 +1182,16 @@ export default function Player() {
     }
 
     // Keep seekContextRef in sync — read by key handler without stale closures
-    seekContextRef.current = { mediaInfo, transcodeSeekTime, currentFile, duration };
+    seekContextRef.current = {
+        mediaInfo,
+        transcodeSeekTime,
+        currentFile,
+        duration,
+        selectedAudioTrack,
+        forcedTranscodeMode,
+    };
 
-    const progress = duration > 0 ? (player.position / duration) * 100 : 0;
+    const progress = duration > 0 ? Math.max(0, Math.min(100, (player.position / duration) * 100)) : 0;
     const isVideo = currentFile.type === 'video';
 
     const aspectRatioClass = {
@@ -812,8 +1245,11 @@ export default function Player() {
                             onTimeUpdate={handleTimeUpdate}
                             onLoadedMetadata={handleLoadedMetadata}
                             onEnded={handleEnded}
-                            onPlay={() => player.setIsPlaying(true)}
+                            onPlay={handlePlaybackResumed}
+                            onPlaying={handlePlaybackResumed}
                             onPause={handlePause}
+                            onStalled={() => handlePlaybackWaiting('stalled')}
+                            onWaiting={() => handlePlaybackWaiting('waiting')}
                             onError={handleMediaError}
                         />
                     </>
@@ -830,8 +1266,11 @@ export default function Player() {
                             onTimeUpdate={handleTimeUpdate}
                             onLoadedMetadata={handleLoadedMetadata}
                             onEnded={handleEnded}
-                            onPlay={() => player.setIsPlaying(true)}
+                            onPlay={handlePlaybackResumed}
+                            onPlaying={handlePlaybackResumed}
                             onPause={handlePause}
+                            onStalled={() => handlePlaybackWaiting('stalled')}
+                            onWaiting={() => handlePlaybackWaiting('waiting')}
                             onError={handleMediaError}
                         />
                     </>
@@ -1227,8 +1666,17 @@ export default function Player() {
                                             <button
                                                 key={stream.index}
                                                 onClick={() => {
+                                                    if (idx === selectedAudioTrack) {
+                                                        setShowTrackMenu(false);
+                                                        return;
+                                                    }
+                                                    const currentPosition = clampPlaybackTime(
+                                                        transcodeSeekTime + (mediaRef.current?.currentTime ?? 0),
+                                                        duration
+                                                    );
                                                     setSelectedAudioTrack(idx);
                                                     setShowTrackMenu(false);
+                                                    applyTranscodeSeek(currentPosition);
                                                 }}
                                                 className={`w-full text-left px-3 py-2 text-xs transition-colors hover:bg-zinc-800 ${selectedAudioTrack === idx ? 'text-indigo-400 bg-indigo-500/10' : 'text-zinc-300'}`}
                                             >
@@ -1298,14 +1746,48 @@ function VolumeIcon({ volume, muted }: { volume: number; muted: boolean }) {
     );
 }
 
-function needsTranscoding(mediaInfo: import('../types').MediaInfo | null, filename: string): boolean {
+function finiteMediaTime(value: number | undefined): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function clampPlaybackTime(value: number, duration: number | null | undefined): number {
+    const safeValue = Number.isFinite(value) ? value : 0;
+    const lowerBounded = Math.max(0, safeValue);
+    if (!duration || !Number.isFinite(duration) || duration <= 0) return lowerBounded;
+    return Math.min(duration, lowerBounded);
+}
+
+function recoverySkipSeconds(attempt: number): number {
+    if (attempt <= 1) return 0.75;
+    if (attempt === 2) return 1.5;
+    if (attempt === 3) return 3;
+    return 5;
+}
+
+function revokeMediaUrl(url: string) {
+    if (url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+    }
+}
+
+function getTranscodeMode(
+    mediaInfo: import('../types').MediaInfo | null,
+    filename: string,
+    selectedAudioTrack = 0
+): TranscodeMode {
     const isHEVC = mediaInfo?.streams.some(s => s.codec_name === 'hevc' || s.codec_name === 'h265');
-    const isUnsupportedAudio = mediaInfo?.streams.some(s =>
-        s.codec_type === 'audio' &&
-        ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(s.codec_name.toLowerCase())
-    );
+    const audioStreams = mediaInfo?.streams.filter(s => s.codec_type === 'audio') ?? [];
+    const selectedAudio = audioStreams[selectedAudioTrack] ?? audioStreams[0];
+    const hasMultipleAudioTracks = audioStreams.length > 1;
+    const isUnsupportedAudio = selectedAudio
+        ? ['ac3', 'eac3', 'dca', 'dts', 'mlp', 'truehd', 'a52'].includes(selectedAudio.codec_name.toLowerCase())
+        : false;
     const isMKV = filename.toLowerCase().endsWith('.mkv');
-    return !!(isHEVC || isUnsupportedAudio || isMKV);
+    if (isHEVC) return 'full';
+    if (hasMultipleAudioTracks) return 'audio';
+    if (isUnsupportedAudio) return 'audio';
+    if (isMKV) return 'remux';
+    return 'direct';
 }
 
 function formatTime(seconds: number): string {
