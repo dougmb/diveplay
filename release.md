@@ -85,28 +85,73 @@ The script (and this design) exist because of several hard constraints:
   distros — the opposite of portable. Ubuntu 22.04 = glibc 2.35. Also, `linuxdeploy`'s gtk
   plugin assumes the Debian `gdk-pixbuf` loader layout and fails on Arch.
 
-- **The AppImage bundles Ubuntu 22.04 ffmpeg/ffprobe.** `bundle.resources` still contains
-  development/Windows binaries, so the script removes those from the AppDir, installs Ubuntu's
-  `ffmpeg` package in the build container, copies `/usr/bin/ffmpeg` and `/usr/bin/ffprobe` into
-  `AppDir/usr/bin`, and lets `linuxdeploy` collect their shared-library dependencies. Do not
+- **The AppImage bundles a static ffmpeg/ffprobe 7.x**, downloaded from
+  johnvansickle.com during the build (GPL static builds). `bundle.resources` still contains
+  development/Windows binaries, so the script removes those from the AppDir first. Do not
   rely on the host `/usr/bin/ffmpeg` from inside the AppImage: AppRun's bundled library path can
   break host FFmpeg binaries, especially on Arch/newer distros.
+  - Ubuntu 22.04's own ffmpeg (4.4) was used until v1.0.19. It had to go because its only
+    pacing control is `-re`, a hard 1x, which starves the player's buffer and stutters —
+    see the transcode pacing note below. 7.x adds `-readrate` / `-readrate_initial_burst`.
+  - Being static, they need no shared libraries, so they are no longer passed to
+    `linuxdeploy --executable`.
+  - The build asserts the download still provides `-readrate_initial_burst`, `libx264` and
+    `aac`, and that `ffprobe` runs — the URL tracks the latest release, so a future rolling
+    update must fail the build rather than ship a player that cannot transcode.
+
+- **On-the-fly transcodes are paced.** Unpaced, `libx264` transcodes the entire file as fast
+  as the machine allows: every core saturated for ~a minute on each file switch (measured
+  380% of a core, vs 13% paced). The backend probes what the available ffmpeg supports and
+  picks the best option, so old system ffmpeg on `.deb` installs still works:
+  | ffmpeg | Flags used | Behaviour |
+  | --- | --- | --- |
+  | >= 7.0 | `-readrate 1.5 -readrate_initial_burst 30` (+ `-readrate_catchup 4` on >= 7.1) | bursts ~3 s to build a 30 s cushion, then settles at ~22% of a core |
+  | 5.1–6.x | `-readrate 1.5` | no initial burst, so the cushion builds as it plays |
+  | < 5.1 | `-re` + shorter GOP (`-g 12`) | 1x only; shorter fragments keep delivery smooth without a buffer |
+
+  Threads are deliberately **not** capped — a `-threads` limit barely helped (380% → 334%,
+  it just saturates fewer threads) and only slows the burst down. `DIVEPLAY_TRANSCODE_PACE=0`
+  disables pacing at runtime.
 
 - **`tauri build` can't run `linuxdeploy` itself inside Docker** (it fails with a silent
   "failed to run linuxdeploy"). The script lets `tauri build` create the AppDir, then runs
   `linuxdeploy --plugin gtk --plugin gstreamer` and `appimagetool` manually.
 
-- **A software Mesa (llvmpipe) stack is bundled** into `usr/lib/dpsoftgl/`, and the AppRun
-  routes GL/EGL through it by default. This is the key to *true* OS-independence: the
-  WebKitGTK in the AppImage talks to a self-contained software GL stack instead of the host's
-  GPU driver. Without it, the bundled (older) WebKitGTK aborts with
-  `Could not create default EGL display: EGL_BAD_PARAMETER` on hosts with a very new Mesa
-  (e.g. Mesa 26.x), and **no `WEBKIT_DISABLE_*` env var works around it**.
-  - Trade-off: software rendering (no GPU-accelerated compositing). Video decode still goes
-    through GStreamer.
-  - **`DIVEPLAY_FORCE_GPU=1`** at runtime skips the software stack and uses the host's
-    hardware OpenGL/EGL — fine on mainstream distros, faster, but will crash on hosts whose
-    GPU stack the bundled WebKit can't talk to.
+- **A software Mesa (llvmpipe) stack is bundled** into `usr/lib/dpsoftgl/` as a *fallback*.
+  It exists because the bundled (older) WebKitGTK cannot talk to every host GL driver: on some
+  hosts it aborts with `Could not create default EGL display: EGL_BAD_PARAMETER` (e.g. Mesa
+  26.x) and **no `WEBKIT_DISABLE_*` env var works around it**.
+
+- **The GL backend is chosen per host at startup** by `dp-glprobe` (`scripts/dp-glprobe.c`,
+  compiled into `AppDir/usr/bin/`). Forcing software rendering unconditionally costs roughly a
+  full CPU core — even for 480p — on machines whose GPU works fine, so AppRun probes first.
+  - "Does the host have a GPU?" is **not** a usable test: the hosts that break have perfectly
+    good GPUs and a populated `/dev/dri`. The probe therefore really initialises EGL, creates a
+    GLES2 context and reads back `GL_RENDERER`.
+  - It runs as a **separate short-lived process**, so a host stack that aborts or segfaults
+    kills the *probe* and AppRun falls back to software. `timeout(1)` covers drivers that hang.
+  - It tries several EGL platforms (the `GDK_BACKEND` one first, then Wayland/X11, default,
+    surfaceless) and only stops on a *hardware* renderer. This matters: on a glvnd host with
+    both Mesa and a vendor driver, `EGL_DEFAULT_DISPLAY` often resolves to Mesa and silently
+    falls back to llvmpipe, while the X11 platform reaches the real GPU.
+  - Exit codes: `0` hardware + usable DRM render node (DMABuf renderer on) · `1` hardware, no
+    render node (DMABuf off) · `2` unusable EGL · `3` host is software-only. `2` and `3` both
+    select the bundled stack — for `3`, ours is newer and self-contained.
+  - The verdict is cached in `${XDG_CACHE_HOME:-~/.cache}/diveplay/gl-mode`, keyed on the
+    DivePlay build, session/backend, GPU set and host GL driver, so it re-probes only when one
+    of those changes. The probe itself takes ~0.15 s.
+  - The selected mode is logged at startup and visible in the in-app log viewer (press `L`).
+
+  Runtime overrides:
+  | Variable | Effect |
+  | --- | --- |
+  | `DIVEPLAY_GPU=auto` | default — probe, use the GPU only if it actually works |
+  | `DIVEPLAY_GPU=1` | force host hardware GL, skip the probe |
+  | `DIVEPLAY_GPU=0` | force the bundled software stack, skip the probe |
+  | `DIVEPLAY_GPU_DEBUG=1` | print the decision and probe detail to stderr |
+  | `DIVEPLAY_GPU_NOCACHE=1` | ignore the cached verdict and re-probe |
+
+  `DIVEPLAY_FORCE_GPU=1` is still honoured as an alias for `DIVEPLAY_GPU=1`.
 
 After building, the in-container step rewrites `dist/` and may touch the lockfiles; discard
 them if you're not committing:

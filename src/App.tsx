@@ -11,6 +11,7 @@ import { readState, writeState } from './services/fileSystem';
 import { clearHandle } from './services/db';
 import type { MediaFile, PlayerState, AspectRatio, SortOrder } from './types';
 import { sortFiles } from './utils/sortFiles';
+import { logNative } from './utils/nativeLog';
 import { isTauri, getTauriAPI } from './services/tauri';
 import { capabilities } from './platform/capabilities';
 
@@ -60,20 +61,27 @@ function App() {
 
   // ── State persistence: auto-save ──
 
-  const saveCurrentState = useCallback(async () => {
+  // `stateRef` is only refreshed by an effect after render, so a caller that has
+  // just produced a newer value (setPosition especially) must pass it in — reading
+  // the ref alone persisted a stale snapshot, which is why resume always came back
+  // at 0. Anything not overridden still comes from the ref.
+  const saveCurrentState = useCallback(async (overrides?: Partial<Pick<PlayerState, 'lastPosition'>>) => {
     const s = stateRef.current;
     if (!s.dirHandle || !s.currentFile) return;
 
+    const position = overrides?.lastPosition ?? s.position;
     const playerState: PlayerState = {
       lastFile: s.currentFile.relativePath,
-      lastPosition: s.position,
+      lastPosition: position,
       settings: { ...s.settings },
     };
 
     try {
       await writeState(s.dirHandle, playerState);
     } catch (err) {
-      console.error('Failed to save state:', err);
+      // Was console.error, i.e. invisible in installed builds. Route it to the
+      // native log so a failing resume is diagnosable from the L viewer.
+      logNative(`failed to save .player-state.json: ${err instanceof Error ? err.message : String(err)}`);
     }
   }, []);
 
@@ -90,10 +98,14 @@ function App() {
   const setPosition = useCallback((pos: number) => {
     setState((s) => ({ ...s, position: pos }));
 
+    // Don't persist position 0: a freshly loaded/switched file reports 0 before
+    // playback starts, and writing that would clobber a good resume point.
+    if (pos <= 0) return;
+
     const now = Date.now();
     if (now - lastSaveTimeRef.current >= 5000) {
       lastSaveTimeRef.current = now;
-      saveCurrentState();
+      saveCurrentState({ lastPosition: pos });
     }
   }, [saveCurrentState]);
 

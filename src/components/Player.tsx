@@ -6,6 +6,9 @@ import { getTauriAPI, isTauri } from '../services/tauri';
 import { capabilities } from '../platform/capabilities';
 import { loadAppSettings } from '../services/db';
 import { parseSubtitleCues, getActiveCue, decodeSubtitleBytes } from '../utils/subtitleParser';
+import { logNative } from '../utils/nativeLog';
+import InfoOverlay from './InfoOverlay';
+import type { PlaybackDiagnostics } from './InfoOverlay';
 import type { SubtitleCue } from '../utils/subtitleParser';
 import type { MediaFile, MediaInfo, AppSettings } from '../types';
 import type { Window as TauriWindow } from '@tauri-apps/api/window';
@@ -18,14 +21,8 @@ interface SubtitleTrack {
 
 type TranscodeMode = 'direct' | 'remux' | 'audio' | 'full';
 
-// Mirror playback diagnostics into the native log ring buffer (L key) so field
-// reports from installed builds include the frontend's view of what happened.
-function logNative(message: string) {
-    if (!isTauri()) return;
-    getTauriAPI()
-        .then(api => api?.invoke('log_event', { message }))
-        .catch(() => {});
-}
+const UNSUPPORTED_FORMAT_MSG =
+    'Format not supported by your browser. Supported: .mp4, .webm (video) · .mp3, .aac, .flac, .wav, .ogg, .m4a (audio).';
 
 export default function Player() {
     const player = usePlayer();
@@ -41,6 +38,8 @@ export default function Player() {
     const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
     const [hasAudioTrack, setHasAudioTrack] = useState(true);
     const [showNoAudioAlert, setShowNoAudioAlert] = useState(false);
+    const [showNoVideoAlert, setShowNoVideoAlert] = useState(false);
+    const [showInfo, setShowInfo] = useState(false);
     const [mediaError, setMediaError] = useState<string | null>(null);
     const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
     const [selectedAudioTrack, setSelectedAudioTrack] = useState<number>(0);
@@ -73,6 +72,11 @@ export default function Player() {
     const intentionalPauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const playbackWatchRef = useRef({ position: 0, updatedAt: 0 });
     const loadStallTicksRef = useRef(0);
+    const audioProbeDoneRef = useRef(false);
+    // Counters for the info overlay's event-rate readout. Refs, not state, so
+    // measuring the render rate cannot itself cause renders.
+    const diagRef = useRef<PlaybackDiagnostics>({ timeUpdates: 0, renders: 0 });
+    diagRef.current.renders++;
     const recoveryAttemptsRef = useRef({ fileKey: '', count: 0, lastAt: 0, lastPosition: 0 });
     const holdAccumRef = useRef(0);
     const holdFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -152,6 +156,7 @@ export default function Player() {
         setStreamReloadNonce(n => n + 1);
         setHasAudioTrack(true);
         setShowNoAudioAlert(false);
+        setShowNoVideoAlert(false);
         setSelectedSubtitleTrack(0);
         isEndedRef.current = false;
         isRecoveringRef.current = false;
@@ -166,6 +171,7 @@ export default function Player() {
             pendingTranscodeSeekTimerRef.current = null;
         }
         pendingTranscodeSeekTimeRef.current = null;
+        audioProbeDoneRef.current = false;
         playbackWatchRef.current = { position: 0, updatedAt: Date.now() };
         recoveryAttemptsRef.current = { fileKey: '', count: 0, lastAt: 0, lastPosition: 0 };
     }, [currentFile, clearPlaybackError, clearScheduledRecovery]);
@@ -184,6 +190,17 @@ export default function Player() {
             clearScheduledRecovery();
         };
     }, [clearScheduledRecovery]);
+
+    // The partial-support notices are informational — playback continues, so
+    // dismiss them by themselves after a few seconds.
+    useEffect(() => {
+        if (!showNoAudioAlert && !showNoVideoAlert) return;
+        const timer = setTimeout(() => {
+            setShowNoAudioAlert(false);
+            setShowNoVideoAlert(false);
+        }, 6000);
+        return () => clearTimeout(timer);
+    }, [showNoAudioAlert, showNoVideoAlert]);
 
     // Auto-skip countdown on media error
     useEffect(() => {
@@ -206,6 +223,15 @@ export default function Player() {
         if (isForcedRecovery) {
             isLoadingRef.current = false;
             isRecoveringRef.current = false;
+        }
+
+        // Without a transcoder there is no stream to rebuild — a dead source
+        // stays dead, so surface the message and auto-advance instead of
+        // running the seek-retry loop.
+        if (isForcedRecovery && !capabilities.canTranscode) {
+            setMediaError(UNSUPPORTED_FORMAT_MSG);
+            setSkipCountdown(8);
+            return;
         }
 
         const fileKey = currentFile.nativePath || currentFile.relativePath || currentFile.name;
@@ -396,6 +422,16 @@ export default function Player() {
 
             console.warn('Media error code:', currentError, 'Source:', currentSrc);
             logNative(`media error code ${currentError}`);
+
+            // Without a transcoding backend there is no stream to rebuild — an
+            // unsupported format can't be recovered by seeking, so tell the user
+            // and offer the auto-skip instead of silently retrying.
+            if (!capabilities.canTranscode) {
+                setMediaError(UNSUPPORTED_FORMAT_MSG);
+                setSkipCountdown(8);
+                return;
+            }
+
             schedulePlaybackRecovery(`media-error-${currentError}`, 0);
         }, 1500);
     }, [blobUrl, schedulePlaybackRecovery]);
@@ -722,6 +758,10 @@ export default function Player() {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
             switch (e.code) {
+                case 'KeyI':
+                    e.preventDefault();
+                    setShowInfo(prev => !prev);
+                    break;
                 case 'Space':
                     e.preventDefault();
                     player.setIsPlaying(!isPlaying);
@@ -801,6 +841,7 @@ export default function Player() {
     }, []);
 
     const handleTimeUpdate = () => {
+        diagRef.current.timeUpdates++;
         const el = mediaRef.current;
         if (!el) return;
         if (pendingMediaErrorTimerRef.current || mediaError || skipCountdown !== null) clearPlaybackError();
@@ -820,6 +861,24 @@ export default function Player() {
                 lastAt: 0,
                 lastPosition: actualPosition,
             };
+        }
+
+        // Web: Chrome exposes no audioTracks API, so a file with a codec the
+        // browser can't decode (common with MKV + AC3/DTS) plays partially with
+        // no error event. Detect it by whether any bytes of that track were
+        // decoded after a couple seconds of playback and show the notice.
+        if (!capabilities.canTranscode && !audioProbeDoneRef.current && el.currentTime > 2.5) {
+            audioProbeDoneRef.current = true;
+            const counts = el as HTMLMediaElement & {
+                webkitAudioDecodedByteCount?: number;
+                webkitVideoDecodedByteCount?: number;
+            };
+            if (counts.webkitAudioDecodedByteCount === 0) {
+                setHasAudioTrack(false);
+                setShowNoAudioAlert(true);
+            } else if (currentFile?.type === 'video' && counts.webkitVideoDecodedByteCount === 0) {
+                setShowNoVideoAlert(true);
+            }
         }
 
         // Auto-advance if we're at the end (for streams that don't trigger onEnded)
@@ -1277,6 +1336,15 @@ export default function Player() {
                 )}
             </div>
 
+            {/* Partial-support notice — informational toast, playback keeps running */}
+            {(showNoAudioAlert || showNoVideoAlert) && (
+                <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 px-4 py-2 bg-amber-900/80 text-amber-200 text-xs text-center rounded-lg pointer-events-none">
+                    {showNoAudioAlert
+                        ? '⚠️ No playable audio track in this file — playing without sound'
+                        : '⚠️ No playable video track in this file — playing audio only'}
+                </div>
+            )}
+
             {/* Unsupported file error overlay */}
             {mediaError && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/85 px-6 z-20">
@@ -1318,6 +1386,18 @@ export default function Player() {
                     />
                 </div>
             )}
+
+            {/* Diagnostics HUD (I key) */}
+            <InfoOverlay
+                isOpen={showInfo}
+                onClose={() => setShowInfo(false)}
+                mediaRef={mediaRef}
+                diagRef={diagRef}
+                mediaInfo={mediaInfo}
+                file={currentFile}
+                transcodeMode={forcedTranscodeMode ?? getTranscodeMode(mediaInfo, currentFile?.name ?? '', selectedAudioTrack)}
+                transcodeSeekTime={transcodeSeekTime}
+            />
 
             {/* Seek feedback overlay */}
             {seekFeedback && (
@@ -1366,13 +1446,6 @@ export default function Player() {
                     }`}
                 onClick={(e) => e.stopPropagation()}
             >
-                {/* No audio alert */}
-                {showNoAudioAlert && (
-                    <div className="absolute -top-12 left-0 right-0 px-4 py-2 bg-amber-900/80 text-amber-200 text-xs text-center">
-                        ⚠️ No supported audio track detected in this video
-                    </div>
-                )}
-
                 {/* Progress bar */}
                 <div
                     ref={progressRef}

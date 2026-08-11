@@ -2,7 +2,7 @@
 import type { MediaFile, PlayerState, FileTypePreferences } from '../../types';
 import type { IFileSystem } from '../core/interfaces';
 import { getTauriAPI } from '../tauri';
-import { STATE_FILE_NAME, getExtension, getBaseName, getDirectory, parsePlayerState } from '../core/utils';
+import { getExtension, getBaseName, getDirectory, parsePlayerState } from '../core/utils';
 
 export const tauriFileSystem: IFileSystem = {
     async pickFolder(): Promise<string> {
@@ -104,31 +104,29 @@ export const tauriFileSystem: IFileSystem = {
         return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
     },
 
+    // Both sides go through our own Rust commands rather than tauri-plugin-fs:
+    // the plugin's scope rejected the user's media folder with "forbidden path"
+    // even with `**` allow-entries, which silently broke resume — writes threw and
+    // reads returned null, so last file, position and settings were all lost.
     async readState(dir: FileSystemDirectoryHandle | string): Promise<PlayerState | null> {
         const api = await getTauriAPI();
         if (!api) return null;
         try {
-            const baseDir = dir as string;
-            const sep = baseDir.includes('\\') ? '\\' : '/';
-            const path = `${baseDir}${sep}${STATE_FILE_NAME}`;
-            const contents = await api.readFile(path);
-            const text = new TextDecoder().decode(contents);
-            return parsePlayerState(text);
+            const text = await api.invoke<string | null>('read_player_state', { dir: dir as string });
+            return text ? parsePlayerState(text) : null;
         } catch {
             return null;
         }
     },
 
+    // Errors propagate: App.tsx logs them to the native ring buffer, so a folder
+    // that cannot be written to is visible in the L viewer instead of silent.
     async writeState(dir: FileSystemDirectoryHandle | string, state: PlayerState): Promise<void> {
         const api = await getTauriAPI();
         if (!api) return;
-        const baseDir = dir as string;
-        const sep = baseDir.includes('\\') ? '\\' : '/';
-        const path = `${baseDir}${sep}${STATE_FILE_NAME}`;
-        const text = JSON.stringify(state, null, 2);
-        const contents = new TextEncoder().encode(text);
-        
-        const { writeFile } = await import('@tauri-apps/plugin-fs');
-        await writeFile(path, contents);
+        await api.invoke('write_player_state', {
+            dir: dir as string,
+            contents: JSON.stringify(state, null, 2),
+        });
     }
 };

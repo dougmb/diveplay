@@ -59,10 +59,23 @@ export interface MediaStream {
     codec_type: string;
     codec_name: string;
     tags?: Record<string, string>;
+    // Optional ffprobe extras, surfaced by the info overlay (I key). Presence
+    // depends on codec/container, so every one is optional.
+    profile?: string | null;
+    width?: number | null;
+    height?: number | null;
+    pix_fmt?: string | null;
+    r_frame_rate?: string | null;
+    channels?: number | null;
+    sample_rate?: string | null;
+    bit_rate?: string | null;
 }
 
 export interface MediaFormat {
     duration: string;
+    format_name?: string | null;
+    size?: string | null;
+    bit_rate?: string | null;
 }
 
 export interface MediaInfo {

@@ -49,17 +49,31 @@ pub struct MediaInfo {
     pub format: MediaFormat,
 }
 
+// ffprobe reports far more than this; the extra fields below feed the info
+// overlay (I key). All optional — they vary by codec and container, and a
+// missing one must never fail the whole probe.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MediaStream {
     pub index: usize,
     pub codec_type: String,
     pub codec_name: String,
     pub tags: Option<serde_json::Value>,
+    pub profile: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub pix_fmt: Option<String>,
+    pub r_frame_rate: Option<String>,
+    pub channels: Option<u32>,
+    pub sample_rate: Option<String>,
+    pub bit_rate: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MediaFormat {
     pub duration: String,
+    pub format_name: Option<String>,
+    pub size: Option<String>,
+    pub bit_rate: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +131,113 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[tauri::command]
 fn get_logs() -> Vec<String> {
     LOG_BUFFER.lock().map(|buf| buf.clone()).unwrap_or_default()
+}
+
+/// How this session is rendering. AppRun probes the host GL stack at startup and
+/// exports the verdict; surface it so the info overlay can show whether we are on
+/// the GPU or on the bundled llvmpipe fallback.
+#[derive(Serialize, Debug, Clone)]
+struct RenderInfo {
+    gl_mode: String,
+    gl_why: String,
+    is_appimage: bool,
+}
+
+#[tauri::command]
+fn get_render_info() -> RenderInfo {
+    RenderInfo {
+        // Set only by the AppImage's AppRun; other packagings render via the host stack.
+        gl_mode: std::env::var("DIVEPLAY_GL_MODE").unwrap_or_else(|_| "host-default".into()),
+        gl_why: std::env::var("DIVEPLAY_GL_WHY").unwrap_or_default(),
+        is_appimage: std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some(),
+    }
+}
+
+/// Which pacing flags this ffmpeg understands. Probed once and cached: the
+/// bundled AppImage build is old (Ubuntu 22.04 ships 4.4, which only has `-re`),
+/// while .deb installs use the host's, which is usually much newer.
+#[derive(Debug, Clone, Copy)]
+struct FfmpegPacing {
+    readrate: bool,        // ffmpeg >= 5.1
+    initial_burst: bool,   // ffmpeg >= 7.0
+    catchup: bool,         // ffmpeg >= 7.1
+}
+
+static FFMPEG_PACING: std::sync::OnceLock<FfmpegPacing> = std::sync::OnceLock::new();
+
+fn ffmpeg_pacing(ffmpeg_path: &PathBuf) -> FfmpegPacing {
+    *FFMPEG_PACING.get_or_init(|| {
+        let help = std::process::Command::new(ffmpeg_path)
+            .args(["-hide_banner", "-h", "full"])
+            .output()
+            .map(|o| {
+                let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+                s.push_str(&String::from_utf8_lossy(&o.stderr));
+                s
+            })
+            .unwrap_or_default();
+        let caps = FfmpegPacing {
+            readrate: help.contains("-readrate "),
+            initial_burst: help.contains("-readrate_initial_burst"),
+            catchup: help.contains("-readrate_catchup"),
+        };
+        app_log!("ffmpeg pacing support: {:?}", caps);
+        caps
+    })
+}
+
+const STATE_FILE_NAME: &str = ".player-state.json";
+
+/// Per-folder playback state lives next to the media, as `.player-state.json`.
+///
+/// This deliberately does NOT go through tauri-plugin-fs: its scope rejected
+/// writes to the user's media folder with "forbidden path" even with `**`
+/// allow-entries in the capability, which silently broke resume (position, last
+/// file and settings were never persisted, and reads returned null). The backend
+/// already reads arbitrary media paths off disk to stream them, so serving this
+/// one small file from Rust adds no new reach — and the command builds the
+/// filename itself, so the frontend cannot use it to touch anything else.
+fn state_path(dir: &str) -> PathBuf {
+    PathBuf::from(dir).join(STATE_FILE_NAME)
+}
+
+#[tauri::command]
+fn read_player_state(dir: String) -> Option<String> {
+    let path = state_path(&dir);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(e) => {
+            // A folder with no state file yet is the normal first-run case.
+            if e.kind() != std::io::ErrorKind::NotFound {
+                app_log!("read_player_state failed for {:?}: {}", path, e);
+            }
+            None
+        }
+    }
+}
+
+#[tauri::command]
+fn write_player_state(dir: String, contents: String) -> Result<(), String> {
+    let path = state_path(&dir);
+    // Write-then-rename so an interrupted save can't leave truncated JSON behind
+    // and cost the user their resume point.
+    let tmp = path.with_extension("json.tmp");
+    let atomic = std::fs::write(&tmp, contents.as_bytes()).and_then(|_| {
+        // Windows rename fails when the destination exists; clear it first.
+        #[cfg(windows)]
+        let _ = std::fs::remove_file(&path);
+        std::fs::rename(&tmp, &path)
+    });
+
+    if let Err(e) = atomic {
+        let _ = std::fs::remove_file(&tmp);
+        // Fall back to a plain write: a non-atomic save beats no save at all.
+        if let Err(e2) = std::fs::write(&path, contents.as_bytes()) {
+            app_log!("write_player_state failed for {:?}: {} (atomic path: {})", path, e2, e);
+            return Err(e2.to_string());
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -374,6 +495,48 @@ async fn stream_file(
             cmd.arg("-ss").arg(start_time.to_string());
         }
 
+        // Pace the encode. Unpaced, libx264 runs flat out and transcodes the whole
+        // file as fast as the machine allows — the spike seen when switching files.
+        //
+        // Plain `-re` (all ffmpeg versions) pins output to exactly 1x, which fixes
+        // the CPU but leaves the client with no buffer: fragments arrive one GOP at
+        // a time with zero margin, which stutters. So prefer burst-then-pace where
+        // the ffmpeg supports it — burst enough to fill a real cushion, then settle
+        // just above realtime, and allow a faster catch-up rate if it falls behind.
+        // Threads are deliberately NOT capped: the burst should finish quickly.
+        //
+        // DIVEPLAY_TRANSCODE_PACE=0 disables pacing entirely.
+        let pacing_enabled = std::env::var("DIVEPLAY_TRANSCODE_PACE")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        let is_reencode = mode != "remux" && mode != "audio";
+        let mut pacing_desc = "off";
+        // Fragments are emitted per GOP, so GOP length is the granularity the
+        // client receives data in. 2s chunks are fine when there is a real buffer;
+        // on the 1x `-re` fallback there isn't one, so use shorter GOPs there to
+        // keep the delivery smooth (costs a little compression efficiency).
+        let mut gop = "48";
+        if is_reencode && pacing_enabled {
+            let caps = ffmpeg_pacing(&ffmpeg_path);
+            if caps.readrate {
+                cmd.arg("-readrate").arg("1.5");
+                pacing_desc = "readrate 1.5";
+                if caps.initial_burst {
+                    // Seconds of media to produce at full speed before throttling.
+                    cmd.arg("-readrate_initial_burst").arg("30");
+                    pacing_desc = "readrate 1.5 + 30s burst";
+                }
+                if caps.catchup {
+                    cmd.arg("-readrate_catchup").arg("4");
+                }
+            } else {
+                // ffmpeg 4.x: 1x is all we have, so soften the delivery instead.
+                cmd.arg("-re");
+                gop = "12";
+                pacing_desc = "-re (1x; ffmpeg too old for -readrate)";
+            }
+        }
+
         cmd.arg("-i").arg(&path_str)
            .arg("-map").arg("0:v:0?")
            .arg("-map").arg(format!("0:a:{}?", audio_idx))
@@ -392,12 +555,15 @@ async fn stream_file(
                    .arg("-b:a").arg("160k");
             }
             _ => {
+                // No -threads cap: pacing is what bounds sustained CPU, and letting
+                // x264 use the machine keeps the initial burst short.
+                app_log!("Transcode: mode={} pacing={}", mode, pacing_desc);
                 cmd.arg("-c:v").arg("libx264")
                    .arg("-pix_fmt").arg("yuv420p")
                    .arg("-preset").arg("ultrafast")
                    .arg("-tune").arg("zerolatency")
                    .arg("-crf").arg("26")
-                   .arg("-g").arg("48")
+                   .arg("-g").arg(gop)
                    .arg("-c:a").arg("aac")
                    .arg("-ac").arg("2")
                    .arg("-b:a").arg("160k");
@@ -518,6 +684,17 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     {
         let is_appimage = std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some();
+        // AppRun probes the host GL stack and picks gpu / gpu-nodmabuf / software
+        // before we start. Surface its verdict here so the in-app log viewer (L)
+        // shows whether this session is GPU-accelerated or on llvmpipe.
+        if let Ok(mode) = std::env::var("DIVEPLAY_GL_MODE") {
+            let why = std::env::var("DIVEPLAY_GL_WHY").unwrap_or_default();
+            app_log!("Rendering mode: {} ({})", mode, why);
+            if mode == "software" {
+                app_log!("  software rendering uses substantially more CPU; \
+                          run with DIVEPLAY_GPU_DEBUG=1 to see why the GPU was rejected");
+            }
+        }
         if is_appimage {
             unsafe { std::env::set_var("APPIMAGE_GTK_THEME", "Adwaita:dark") };
             unsafe { std::env::set_var("GTK_USE_PORTAL", "0") };
@@ -574,7 +751,10 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_streaming_url, get_media_info, get_logs, clear_logs, log_event])
+        .invoke_handler(tauri::generate_handler![
+            get_streaming_url, get_media_info, get_logs, clear_logs, log_event,
+            get_render_info, read_player_state, write_player_state
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

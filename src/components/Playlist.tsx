@@ -1,6 +1,6 @@
 // Playlist.tsx — File list grouped by subfolder with Search
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, memo } from 'react';
 import type { MediaFile, SortOrder } from '../types';
 import { sortFiles } from '../utils/sortFiles';
 
@@ -12,7 +12,12 @@ interface PlaylistProps {
     onSortChange: (order: SortOrder) => void;
 }
 
-export default function Playlist({ files, currentFile, onFileSelect, sortOrder, onSortChange }: PlaylistProps) {
+// Memoised: App re-renders on every playback position tick (~4/s), and this list
+// can hold hundreds of files. Without this the whole playlist was rebuilt — and
+// re-sorted — several times a second, which dominated JS allocation and kept the
+// JavaScriptCore GC thread pegged. All props from App are referentially stable
+// during playback, so this genuinely stops the re-render.
+function Playlist({ files, currentFile, onFileSelect, sortOrder, onSortChange }: PlaylistProps) {
     const [searchQuery, setSearchQuery] = useState('');
     const [flatView, setFlatView] = useState(false);
 
@@ -27,6 +32,13 @@ export default function Playlist({ files, currentFile, onFileSelect, sortOrder, 
 
     const groups = useMemo(() => groupByFolder(filteredFiles), [filteredFiles]);
     const folderNames = useMemo(() => Object.keys(groups).sort(), [groups]);
+    // Sorting used to happen inline in the render map, so every folder group was
+    // re-sorted on each render. Do it once per (groups, sortOrder) instead.
+    const sortedGroups = useMemo(() => {
+        const out: Record<string, MediaFile[]> = {};
+        for (const folder of folderNames) out[folder] = sortFiles(groups[folder], sortOrder);
+        return out;
+    }, [groups, folderNames, sortOrder]);
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
@@ -111,7 +123,7 @@ export default function Playlist({ files, currentFile, onFileSelect, sortOrder, 
                                     </span>
                                 </div>
                             )}
-                            {sortFiles(groups[folder], sortOrder).map((file) => (
+                            {sortedGroups[folder].map((file) => (
                                 <FileButton key={file.relativePath} file={file} isActive={currentFile?.relativePath === file.relativePath} onFileSelect={onFileSelect} />
                             ))}
                         </div>
@@ -122,7 +134,7 @@ export default function Playlist({ files, currentFile, onFileSelect, sortOrder, 
     );
 }
 
-function FileButton({ file, isActive, onFileSelect }: { file: MediaFile; isActive: boolean; onFileSelect: (f: MediaFile) => void }) {
+const FileButton = memo(function FileButton({ file, isActive, onFileSelect }: { file: MediaFile; isActive: boolean; onFileSelect: (f: MediaFile) => void }) {
     const isVideo = file.type === 'video';
     return (
         <button
@@ -147,7 +159,9 @@ function FileButton({ file, isActive, onFileSelect }: { file: MediaFile; isActiv
             <span className="truncate">{file.name}</span>
         </button>
     );
-}
+});
+
+export default memo(Playlist);
 
 function groupByFolder(files: MediaFile[]): Record<string, MediaFile[]> {
     const groups: Record<string, MediaFile[]> = {};
