@@ -10,10 +10,10 @@
 #   * glibc 2.35 (Ubuntu 22.04) keeps the AppImage runnable on older distros.
 #   * linuxdeploy's gtk plugin assumes the Debian gdk-pixbuf layout (breaks on Arch).
 #
-# The resulting AppImage bundles a software Mesa (llvmpipe) stack and routes
-# GL/EGL through it by default, so it renders independently of the host GPU
-# driver and runs on ANY distro. Set DIVEPLAY_FORCE_GPU=1 at runtime to use the
-# host's hardware OpenGL/EGL instead.
+# The resulting AppImage uses the host's hardware GL when that actually works and
+# falls back to a bundled software Mesa (llvmpipe) stack when it does not, so it
+# runs on ANY distro. The tier is probed (dp-glprobe), then verified by
+# supervising the first launch (dp-run); DIVEPLAY_GPU=1/0 pins it by hand.
 #
 # Usage:  ./scripts/build-appimage.sh
 # Output: ./release-artifacts/diveplay_<ver>_amd64.AppImage
@@ -156,11 +156,69 @@ while read -r so; do
 done < /tmp/deps
 printf '%s\n' '{ "file_format_version":"1.0.0", "ICD":{ "library_path":"libEGL_mesa.so.0" } }' > "$SG/glvnd/50_mesa.json"
 
-echo "::STEP:: build dp-glprobe (hardware-GL detector)"
+echo "::STEP:: build dp-glprobe (hardware-GL detector) + install dp-run (launcher)"
 # Built AFTER linuxdeploy on purpose: the probe must resolve libEGL from the HOST
 # at runtime (it dlopen()s it), so it must not have host libs bundled next to it.
 gcc -O2 -Wall -Wextra -o "$APPDIR/usr/bin/dp-glprobe" /work/scripts/dp-glprobe.c -ldl
 test -x "$APPDIR/usr/bin/dp-glprobe" || { echo "ERROR: dp-glprobe did not build"; exit 1; }
+# dp-run is SOURCED by AppRun, never executed: spawning a host bash under the
+# AppDir's LD_LIBRARY_PATH is itself one of the failure modes we fix below.
+install -m644 /work/scripts/dp-run.sh "$APPDIR/usr/bin/dp-run"
+bash -n "$APPDIR/usr/bin/dp-run" || { echo "ERROR: dp-run.sh is not valid bash"; exit 1; }
+
+echo "::STEP:: move host-coupled libraries to usr/lib/dphost"
+# linuxdeploy bundles every transitive dependency it can find, including some
+# whose ABI is shared with code that lives OUTSIDE the AppImage. Two groups bit
+# us, both invisible until you run on a rolling-release host:
+#
+#   wayland  the host's libEGL_mesa.so.0 links libwayland-client, and Mesa >= 25
+#            needs wl_fixes_interface (wayland 1.23+). Shadowing it with Ubuntu
+#            22.04's 1.20 made glvnd fail to load the Mesa EGL vendor, so every
+#            eglGetPlatformDisplay returned EGL_BAD_PARAMETER and WebKit's
+#            WebProcess aborted with "Could not create default EGL display" —
+#            a live window with a dead page, on a machine with a working GPU.
+#   term     bundled readline/ncurses break any host shell or CLI tool the app
+#            spawns ("bash: undefined symbol: rl_trim_arg_from_keyseq").
+#
+# Neither can simply be deleted: a host that genuinely lacks them still needs a
+# copy. They move to usr/lib/dphost/<group>/, which dp-run puts back on the path
+# only for groups the host cannot satisfy itself.
+# One directory = one decision. Libraries that must stay on the same release as
+# each other (the wayland family: libwayland-cursor calls into libwayland-client)
+# share a directory and are restored together; everything else gets a directory
+# of its own, so a host that ships libncursesw but not libncurses only gets the
+# bundled libncurses back.
+mk_dphost() {
+  group="$1"; shift
+  dir="$APPDIR/usr/lib/dphost/$group"
+  mkdir -p "$dir"
+  for pat in "$@"; do
+    for f in $APPDIR/usr/lib/$pat; do
+      if [ -e "$f" ]; then mv "$f" "$dir/"; echo "   dphost/$group <- $(basename "$f")"; fi
+    done
+  done
+  rmdir "$dir" 2>/dev/null || true
+}
+mk_dphost_each() {
+  for pat in "$@"; do
+    for f in $APPDIR/usr/lib/$pat; do
+      if [ -e "$f" ]; then mk_dphost "$(basename "$f")" "$(basename "$f")"; fi
+    done
+  done
+}
+mk_dphost wayland 'libwayland-*.so.*'
+# Pulled in by gstreamer's aalib/libcaca/fluidsynth plugins, and poisonous to any
+# host CLI tool the app spawns when they are older than the host's.
+mk_dphost_each 'libreadline.so.*' 'libhistory.so.*' 'libtinfo.so.*' \
+               'libncurses.so.*' 'libncursesw.so.*' 'libedit.so.*'
+test ! -e "$APPDIR/usr/lib/libwayland-client.so.0" \
+  || { echo "ERROR: libwayland-client.so.0 still shadows the host's"; exit 1; }
+test -e "$APPDIR/usr/lib/dphost/wayland/libwayland-client.so.0" \
+  || { echo "ERROR: no bundled libwayland-client fallback was kept"; exit 1; }
+# dpsoftgl keeps its own self-consistent copies; software mode must not depend
+# on the host at all.
+test -e "$APPDIR/usr/lib/dpsoftgl/libwayland-client.so.0" \
+  || { echo "ERROR: dpsoftgl lost its libwayland-client"; exit 1; }
 
 echo "::STEP:: inject GPU auto-detection into AppRun"
 # Must run BEFORE linuxdeploy's gtk hook, which reads APPIMAGE_GTK_THEME.
@@ -178,128 +236,116 @@ INJ
 # EGL platform the probe should test first) and immediately before exec.
 cat > /tmp/inject-gl.txt <<'INJ'
 
-# === DivePlay: automatic GPU detection with software-rendering fallback ========
+# === DivePlay: GL tier selection, verified at runtime ==========================
 # usr/lib/dpsoftgl holds a software Mesa (llvmpipe) stack so the app can render on
 # hosts whose GL driver the bundled WebKitGTK cannot talk to. Using it
 # unconditionally costs ~a full CPU core on machines that DO have a working GPU,
-# so the choice is made per host, at startup.
+# so a tier is chosen per host, at startup:
 #
-# The decision comes from dp-glprobe, which actually initialises EGL, creates a
-# context and reads GL_RENDERER — "is there a GPU?" is not a usable test, because
-# the hosts that break have perfectly good GPUs. The probe is a separate
-# short-lived process, so a host stack that aborts or segfaults takes down the
-# PROBE and we fall back safely; timeout(1) covers drivers that hang instead.
+#   gpu | gpu-nodmabuf | software    (usr/bin/dp-run defines what each one sets)
 #
-#   DIVEPLAY_GPU=auto        (default) probe, then use the GPU only if it works
-#   DIVEPLAY_GPU=1           force host hardware GL, skip the probe
-#   DIVEPLAY_GPU=0           force the bundled software stack, skip the probe
+# dp-glprobe PROPOSES a tier by really initialising EGL — once for the platform
+# GTK will use, and once along the ladder WebKit's WebProcess uses (GBM ->
+# surfaceless -> default). Probing only the first of those is what shipped
+# v1.0.19 as "gpu" on hosts where the WebProcess then died with
+# "Could not create default EGL display: EGL_BAD_PARAMETER. Aborting...",
+# leaving a live window with a dead page. It runs as a separate short-lived
+# process, so a driver that aborts kills the PROBE, and timeout(1) covers
+# drivers that hang.
+#
+# dp-run then VERIFIES it: the first launch on a given host is supervised, and a
+# tier that cannot render is dropped for the next one down. Only a tier that
+# survived gets cached, so this costs one relaunch, once, on affected hosts.
+#
+#   DIVEPLAY_GPU=auto        (default) probe, verify, cache
+#   DIVEPLAY_GPU=1           force host hardware GL, no probe, no supervision
+#   DIVEPLAY_GPU=0           force the bundled software stack
+#   DIVEPLAY_GL_START=<tier> start the supervised ladder at <tier> (testing)
+#   DIVEPLAY_GL_NOWATCH=1    never supervise
+#   DIVEPLAY_GL_GRACE=<s>    seconds a tier must survive to count (default 20)
 #   DIVEPLAY_GPU_DEBUG=1     report the decision (and probe detail) on stderr
-#   DIVEPLAY_GPU_NOCACHE=1   ignore the cached decision and re-probe
+#   DIVEPLAY_GPU_NOCACHE=1   ignore the cached tier and re-probe
 # DIVEPLAY_FORCE_GPU=1 is still honoured, as an alias for DIVEPLAY_GPU=1.
 dp_dbg() { if [ "${DIVEPLAY_GPU_DEBUG:-0}" = "1" ]; then printf 'diveplay/gl: %s\n' "$*" >&2; fi; }
 
 dp_gl_mode="${DIVEPLAY_GPU:-auto}"
 if [ "${DIVEPLAY_FORCE_GPU:-0}" = "1" ]; then dp_gl_mode=1; fi
-dp_use_gpu=0
-dp_dmabuf=0
-dp_why=""
+DP_GL_START=""
+DP_GL_WHY=""
+DP_GL_SUPERVISE=0
+DP_GL_KEY=""
+DP_GL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/diveplay/gl-mode"
 
 case "$dp_gl_mode" in
   1|on|yes|true|gpu|force)
-    dp_use_gpu=1; dp_dmabuf=1; dp_why="forced on by DIVEPLAY_GPU" ;;
+    DP_GL_START="gpu"; DP_GL_WHY="forced on by DIVEPLAY_GPU" ;;
   0|off|no|false|sw|software)
-    dp_use_gpu=0; dp_why="forced off by DIVEPLAY_GPU" ;;
+    DP_GL_START="software"; DP_GL_WHY="forced off by DIVEPLAY_GPU" ;;
   *)
-    # Cache the verdict, keyed on the things that can change it: the DivePlay
-    # build, the session/backend, the set of GPUs, and the host GL driver.
+    # Cache the verified tier, keyed on the things that can change it: the
+    # DivePlay build, the session/backend, the set of GPUs, and the host GL
+    # driver. An empty DP_GL_START tells dp-run to probe.
     dp_fp=$( set +e
              echo "@DP_BUILD_ID@"
              echo "${XDG_SESSION_TYPE:-}|${GDK_BACKEND:-}|${DISPLAY:-}|${WAYLAND_DISPLAY:-}"
              cat /sys/class/drm/card*/device/vendor /sys/class/drm/card*/device/device 2>/dev/null
              head -n1 /proc/driver/nvidia/version 2>/dev/null
              ls -lLn /usr/share/glvnd/egl_vendor.d/*.json 2>/dev/null )
-    dp_key=$(printf '%s' "$dp_fp" | md5sum 2>/dev/null | cut -d' ' -f1)
-    dp_cache="${XDG_CACHE_HOME:-$HOME/.cache}/diveplay/gl-mode"
-    dp_rc=""
-    if [ "${DIVEPLAY_GPU_NOCACHE:-0}" != "1" ] && [ -n "$dp_key" ] && [ -r "$dp_cache" ]; then
-      dp_rc=$(awk -v k="$dp_key" '$1==k {print $2; exit}' "$dp_cache" 2>/dev/null)
-      if [ -n "$dp_rc" ]; then dp_why="cached probe result $dp_rc"; fi
+    DP_GL_KEY=$(printf '%s' "$dp_fp" | md5sum 2>/dev/null | cut -d' ' -f1)
+    if [ "${DIVEPLAY_GPU_NOCACHE:-0}" != "1" ] && [ -n "$DP_GL_KEY" ] && [ -r "$DP_GL_CACHE" ]; then
+      dp_cached=$(awk -v k="$DP_GL_KEY" '$1==k {print $2; exit}' "$DP_GL_CACHE" 2>/dev/null)
+      case "$dp_cached" in
+        gpu|gpu-nodmabuf|software)
+          DP_GL_START="$dp_cached"; DP_GL_WHY="cached: $dp_cached verified on this host" ;;
+      esac
     fi
-    if [ -z "$dp_rc" ]; then
-      dp_probe="$this_dir/usr/bin/dp-glprobe"
-      dp_to=""
-      if command -v timeout >/dev/null 2>&1; then dp_to="timeout -k 2 10"; fi
-      if [ -x "$dp_probe" ]; then
-        set +e
-        dp_out=$(env -u LIBGL_ALWAYS_SOFTWARE -u GALLIUM_DRIVER -u MESA_LOADER_DRIVER_OVERRIDE \
-                     -u __EGL_VENDOR_LIBRARY_DIRS -u __EGL_VENDOR_LIBRARY_FILENAMES \
-                     -u LIBGL_DRIVERS_PATH -u WEBKIT_DISABLE_DMABUF_RENDERER \
-                     $dp_to "$dp_probe" 2>/dev/null)
-        dp_rc=$?
-        set -e
-        dp_why="probe: ${dp_out:-<no output>} (exit $dp_rc)"
-        if [ -n "$dp_key" ]; then
-          mkdir -p "${dp_cache%/*}" 2>/dev/null || true
-          printf '%s %s\n' "$dp_key" "$dp_rc" > "$dp_cache" 2>/dev/null || true
-        fi
-      else
-        dp_rc=2; dp_why="dp-glprobe missing"
-      fi
-    fi
-    case "$dp_rc" in
-      0) dp_use_gpu=1; dp_dmabuf=1 ;;   # hardware + usable render node
-      1) dp_use_gpu=1; dp_dmabuf=0 ;;   # hardware, but no DMABuf-capable render node
-      *) dp_use_gpu=0 ;;                # 2 = unusable EGL, 3 = host is software-only
-    esac
     ;;
 esac
 
-if [ "$dp_use_gpu" = "1" ]; then
-  # Drop any software-forcing variables inherited from the user's environment,
-  # so "gpu" mode cannot be silently downgraded back to llvmpipe.
-  unset LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE
-  unset __EGL_VENDOR_LIBRARY_DIRS __EGL_VENDOR_LIBRARY_FILENAMES LIBGL_DRIVERS_PATH
-  unset WEBKIT_DISABLE_DMABUF_RENDERER
-  export DIVEPLAY_GL_MODE="gpu"
-  if [ "$dp_dmabuf" != "1" ]; then
-    export WEBKIT_DISABLE_DMABUF_RENDERER=1
-    export DIVEPLAY_GL_MODE="gpu-nodmabuf"
-  fi
-else
-  export LD_LIBRARY_PATH="$this_dir/usr/lib/dpsoftgl${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-  export __EGL_VENDOR_LIBRARY_DIRS="$this_dir/usr/lib/dpsoftgl/glvnd"
-  export LIBGL_DRIVERS_PATH="$this_dir/usr/lib/dpsoftgl/dri"
-  export LIBGL_ALWAYS_SOFTWARE=1
-  export GALLIUM_DRIVER=llvmpipe
-  export MESA_LOADER_DRIVER_OVERRIDE=swrast
-  export WEBKIT_DISABLE_DMABUF_RENDERER=1
-  export DIVEPLAY_GL_MODE="software"
+if [ -n "${DIVEPLAY_GL_START:-}" ]; then
+  DP_GL_START="$DIVEPLAY_GL_START"
+  DP_GL_WHY="start tier forced by DIVEPLAY_GL_START"
+  DP_GL_SUPERVISE=1
 fi
-export DIVEPLAY_GL_WHY="$dp_why"
-dp_dbg "mode=$DIVEPLAY_GL_MODE ($dp_why)"
-# === end DivePlay GPU detection ===
+
+DP_APPDIR="$this_dir"
+DP_APP="$this_dir/AppRun.wrapped"
+# dp-run is sourced, not run: a bash started under the AppDir's LD_LIBRARY_PATH
+# can itself fail to load on hosts newer than the one that built this image.
+source "$this_dir/usr/bin/dp-run"
+dp_main "$@"
+# === end DivePlay GL tier selection ===
 INJ
 
 DP_BUILD_ID="$(grep -oP '"version":\s*"\K[^"]+' /work/src-tauri/tauri.conf.json)-$(date -u +%Y%m%d%H%M%S)"
 sed -i "s/@DP_BUILD_ID@/$DP_BUILD_ID/" /tmp/inject-gl.txt
+
+# The GL block REPLACES linuxdeploy's exec line — dp_main takes over from there,
+# exec()ing the app itself once it knows which tier to use. Bail out loudly if a
+# future linuxdeploy stops generating the line we are matching on.
+grep -qE '^exec +"\$this_dir"/AppRun\.wrapped "\$@"' "$APPDIR/AppRun" \
+  || { echo "ERROR: linuxdeploy's AppRun exec line is not what we expected"; exit 1; }
 
 awk -v gtkf=/tmp/inject-gtk.txt -v glf=/tmp/inject-gl.txt '
   /^source .*linuxdeploy-plugin-gstreamer\.sh/ && !g {
     while ((getline line < gtkf) > 0) print line; g = 1
   }
   /^exec / && !x {
-    while ((getline line < glf) > 0) print line; x = 1
+    while ((getline line < glf) > 0) print line; x = 1; next
   }
   { print }
 ' "$APPDIR/AppRun" > "$APPDIR/AppRun.new"
 mv "$APPDIR/AppRun.new" "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
-grep -q "DIVEPLAY_GPU" "$APPDIR/AppRun"    || { echo "ERROR: GPU-detection injection failed"; exit 1; }
-grep -q "dp-glprobe" "$APPDIR/AppRun"      || { echo "ERROR: probe wiring missing from AppRun"; exit 1; }
+grep -q "DIVEPLAY_GPU" "$APPDIR/AppRun"     || { echo "ERROR: GL-tier injection failed"; exit 1; }
+grep -q "dp_main" "$APPDIR/AppRun"          || { echo "ERROR: dp-run wiring missing from AppRun"; exit 1; }
+grep -q "dp-glprobe" "$APPDIR/usr/bin/dp-run" || { echo "ERROR: probe wiring missing from dp-run"; exit 1; }
 grep -q "GTK_USE_PORTAL=0" "$APPDIR/AppRun" || { echo "ERROR: GTK dark-mode injection failed"; exit 1; }
-# The GL block is only correct after the hooks (GDK_BACKEND) and before exec.
-awk '/DIVEPLAY_GL_MODE/{gl=NR} /^exec /{ex=NR} END{exit !(gl && ex && gl < ex)}' "$APPDIR/AppRun" \
-  || { echo "ERROR: GL block is not positioned before exec in AppRun"; exit 1; }
+# Nothing may exec the app behind dp_main's back, and the hooks (which set
+# GDK_BACKEND, and thus which EGL platform the probe tests first) must run first.
+! grep -q '^exec ' "$APPDIR/AppRun" || { echo "ERROR: a raw exec line survived in AppRun"; exit 1; }
+awk '/linuxdeploy-plugin-gtk\.sh/{h=NR} /dp_main/{m=NR} END{exit !(h && m && h < m)}' "$APPDIR/AppRun" \
+  || { echo "ERROR: dp_main does not run after the linuxdeploy hooks"; exit 1; }
 bash -n "$APPDIR/AppRun" || { echo "ERROR: generated AppRun is not valid bash"; exit 1; }
 
 echo "::STEP:: package final AppImage"

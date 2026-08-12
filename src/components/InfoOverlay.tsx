@@ -30,6 +30,8 @@ interface InfoOverlayProps {
 interface RenderInfo {
     gl_mode: string;
     gl_why: string;
+    /** True when the launcher had to drop to a lower tier because the one above it could not render. */
+    gl_fallback: boolean;
     is_appimage: boolean;
 }
 
@@ -186,6 +188,7 @@ export default function InfoOverlay({
 
             <Section title="Rendering">
                 <Row label="Mode" value={gl.label} tone={gl.tone} />
+                {render?.gl_fallback && <Row label="Fallback" value="higher tier failed to render" tone="warn" />}
                 {render?.gl_why && <Row label="Decided by" value={render.gl_why} />}
                 <Row
                     label="Pipeline"

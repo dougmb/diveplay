@@ -140,6 +140,7 @@ fn get_logs() -> Vec<String> {
 struct RenderInfo {
     gl_mode: String,
     gl_why: String,
+    gl_fallback: bool,
     is_appimage: bool,
 }
 
@@ -149,6 +150,8 @@ fn get_render_info() -> RenderInfo {
         // Set only by the AppImage's AppRun; other packagings render via the host stack.
         gl_mode: std::env::var("DIVEPLAY_GL_MODE").unwrap_or_else(|_| "host-default".into()),
         gl_why: std::env::var("DIVEPLAY_GL_WHY").unwrap_or_default(),
+        // dp-run sets this when it had to drop a tier to get anything on screen.
+        gl_fallback: std::env::var("DIVEPLAY_GL_FALLBACK").as_deref() == Ok("1"),
         is_appimage: std::env::var_os("APPIMAGE").is_some() || std::env::var_os("APPDIR").is_some(),
     }
 }
@@ -690,6 +693,9 @@ pub fn run() {
         if let Ok(mode) = std::env::var("DIVEPLAY_GL_MODE") {
             let why = std::env::var("DIVEPLAY_GL_WHY").unwrap_or_default();
             app_log!("Rendering mode: {} ({})", mode, why);
+            if std::env::var("DIVEPLAY_GL_FALLBACK").as_deref() == Ok("1") {
+                app_log!("  a higher tier failed to render on this host and was dropped automatically");
+            }
             if mode == "software" {
                 app_log!("  software rendering uses substantially more CPU; \
                           run with DIVEPLAY_GPU_DEBUG=1 to see why the GPU was rejected");

@@ -13,7 +13,7 @@ Available in two versions: a portable **Web Player** and a powerful **Desktop Ap
 | ------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | **Web (HTML)**                        | A single, portable HTML file. No installation required. | Basic H.264/AAC files, portability.                                                |
 | **Desktop — Windows (NSIS)**          | Installer with bundled **FFmpeg** sidecars.             | MKV, HEVC, AC3, DTS, and high-bitrate files.                                       |
-| **Desktop — Linux (.deb / AppImage)** | Uses the system `ffmpeg` package for transcoding.       | Same as Windows; `apt install ffmpeg` covers it (declared as a `.deb` dependency). |
+| **Desktop — Linux (.deb / AppImage)** | AppImage bundles FFmpeg; the `.deb` uses the system one. | Same as Windows; for the `.deb`, `apt install ffmpeg` covers it (declared as a dependency). |
 
 > 💡 **Desktop Advantage:** The Desktop version automatically transcodes unsupported codecs (like AC3 audio or HEVC video) on-the-fly, allowing you to play almost any media file without manual conversion.
 
@@ -84,6 +84,21 @@ npm run build
 Output in `dist/`.
 
 ## Limitations
+
+### Linux AppImage rendering
+
+The AppImage carries its own WebKitGTK, which does not get along with every host GL driver. On
+first launch it picks a rendering mode for your machine — the GPU when that actually works, a
+bundled software renderer when it does not — and remembers the choice. If a mode turns out not to
+render, it drops to the next one automatically and relaunches, once.
+
+Press `I` in the app to see the mode in use. To override it:
+
+```bash
+DIVEPLAY_GPU=0 ./diveplay_<ver>_amd64.AppImage      # force the software renderer
+DIVEPLAY_GPU=1 ./diveplay_<ver>_amd64.AppImage      # force the host GPU
+DIVEPLAY_GPU_DEBUG=1 ./diveplay_<ver>_amd64.AppImage # explain the choice on stderr
+```
 
 ### Codec Support
 

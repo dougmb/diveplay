@@ -117,39 +117,72 @@ The script (and this design) exist because of several hard constraints:
   "failed to run linuxdeploy"). The script lets `tauri build` create the AppDir, then runs
   `linuxdeploy --plugin gtk --plugin gstreamer` and `appimagetool` manually.
 
-- **A software Mesa (llvmpipe) stack is bundled** into `usr/lib/dpsoftgl/` as a *fallback*.
-  It exists because the bundled (older) WebKitGTK cannot talk to every host GL driver: on some
-  hosts it aborts with `Could not create default EGL display: EGL_BAD_PARAMETER` (e.g. Mesa
-  26.x) and **no `WEBKIT_DISABLE_*` env var works around it**.
+- **Host-coupled libraries are moved to `usr/lib/dphost/<group>/`** instead of sitting in
+  `usr/lib/`. linuxdeploy bundles every transitive dependency it finds, and a few of those share
+  an ABI with code *outside* the AppImage, where an Ubuntu 22.04 copy is actively harmful:
+  - `wayland` — the **host's** `libEGL_mesa.so.0` links `libwayland-client`, and Mesa ≥ 25 needs
+    `wl_fixes_interface` (wayland 1.23+). Shadowing it with the bundled 1.20 made glvnd fail to
+    load the Mesa EGL vendor, so **every** `eglGetPlatformDisplay` returned `EGL_BAD_PARAMETER`
+    and WebKit's WebProcess aborted with `Could not create default EGL display` — a live window
+    with a dead page, on a machine with a perfectly good GPU. This was the v1.0.19 AMD/Arch bug;
+    NVIDIA hosts were unaffected only because `libEGL_nvidia.so.0` does not link wayland.
+  - readline/ncurses/tinfo/edit (dragged in by gstreamer's aalib, libcaca and fluidsynth
+    plugins) — these break any host shell or CLI tool the app spawns
+    (`bash: undefined symbol: rl_trim_arg_from_keyseq`).
 
-- **The GL backend is chosen per host at startup** by `dp-glprobe` (`scripts/dp-glprobe.c`,
-  compiled into `AppDir/usr/bin/`). Forcing software rendering unconditionally costs roughly a
-  full CPU core — even for 480p — on machines whose GPU works fine, so AppRun probes first.
-  - "Does the host have a GPU?" is **not** a usable test: the hosts that break have perfectly
-    good GPUs and a populated `/dev/dri`. The probe therefore really initialises EGL, creates a
-    GLES2 context and reads back `GL_RENDERER`.
-  - It runs as a **separate short-lived process**, so a host stack that aborts or segfaults
-    kills the *probe* and AppRun falls back to software. `timeout(1)` covers drivers that hang.
-  - It tries several EGL platforms (the `GDK_BACKEND` one first, then Wayland/X11, default,
-    surfaceless) and only stops on a *hardware* renderer. This matters: on a glvnd host with
-    both Mesa and a vendor driver, `EGL_DEFAULT_DISPLAY` often resolves to Mesa and silently
-    falls back to llvmpipe, while the X11 platform reaches the real GPU.
-  - Exit codes: `0` hardware + usable DRM render node (DMABuf renderer on) · `1` hardware, no
-    render node (DMABuf off) · `2` unusable EGL · `3` host is software-only. `2` and `3` both
-    select the bundled stack — for `3`, ours is newer and self-contained.
-  - The verdict is cached in `${XDG_CACHE_HOME:-~/.cache}/diveplay/gl-mode`, keyed on the
-    DivePlay build, session/backend, GPU set and host GL driver, so it re-probes only when one
-    of those changes. The probe itself takes ~0.15 s.
-  - The selected mode is logged at startup and visible in the in-app log viewer (press `L`).
+  `dp-run` puts a directory back on `LD_LIBRARY_PATH` only when the host cannot satisfy it, and
+  **one directory is one decision**: the wayland family shares a directory and is restored as a
+  set, every other library gets a directory of its own (so an Arch host, which ships
+  `libncursesw.so.6` but no `libncurses.so.6`, gets exactly the one it is missing).
+
+- **A software Mesa (llvmpipe) stack is bundled** into `usr/lib/dpsoftgl/` as the *floor*. It
+  keeps its own self-consistent copies of everything, including wayland, so software mode
+  depends on nothing from the host.
+
+- **The GL tier is proposed per host, then verified.** Forcing software rendering
+  unconditionally costs roughly a full CPU core — even for 480p — on machines whose GPU works
+  fine, so the AppImage picks one of three tiers:
+
+  | Tier | What it sets |
+  | --- | --- |
+  | `gpu` | host GL + WebKit's DMABuf renderer |
+  | `gpu-nodmabuf` | host GL for GTK, `WEBKIT_DISABLE_DMABUF_RENDERER=1` so the WebProcess never needs an EGL display of its own |
+  | `software` | the bundled llvmpipe stack, DMABuf off |
+
+  - **Proposed** by `dp-glprobe` (`scripts/dp-glprobe.c`, compiled into `AppDir/usr/bin/`).
+    "Does the host have a GPU?" is not a usable test — the hosts that break have good GPUs — so
+    it really initialises EGL, creates a GLES2 context and reads `GL_RENDERER`, for **both**
+    stacks that have to work: the platform GTK uses (`GDK_BACKEND`, pinned to x11 by the gtk
+    hook) *and* the ladder WebKit's WebProcess uses (GBM → surfaceless → default, first hit
+    wins, as WebKit does it). Testing only the former is what shipped v1.0.19 as `gpu` on a host
+    where the WebProcess could not start.
+  - Each candidate runs in its **own forked child** with a deadline, so a driver that aborts,
+    segfaults or hangs only rules out that candidate. `timeout(1)` wraps the probe on top.
+  - Exit codes: `0` → `gpu` · `1` → `gpu-nodmabuf` · `2` unusable EGL and `3` host is
+    software-only → `software` (for `3`, ours is newer and self-contained). stdout carries
+    `tier=… ui=… web=…`, which is what the info overlay shows as "Decided by".
+  - **Verified** by `dp-run` (`scripts/dp-run.sh`, *sourced* by AppRun — a fresh `bash` under
+    the AppDir's `LD_LIBRARY_PATH` is itself unreliable). The first launch on a given host is
+    supervised: WebKit's fatal EGL banner kills only the WebProcess, so an exit code is not
+    enough to notice, and stderr is watched for it (plus a crash inside the grace window). A
+    tier that trips is torn down by process group and the next one down is launched instead.
+  - Only a tier that survived is cached, in `${XDG_CACHE_HOME:-~/.cache}/diveplay/gl-mode`,
+    keyed on the DivePlay build, session/backend, GPU set and host GL driver. Later launches
+    skip both the probe and the supervision and `exec` straight into it.
+  - The tier, the reason, and whether it came from a fallback are logged at startup (log viewer,
+    `L`) and shown in the info overlay (`I`).
 
   Runtime overrides:
   | Variable | Effect |
   | --- | --- |
-  | `DIVEPLAY_GPU=auto` | default — probe, use the GPU only if it actually works |
-  | `DIVEPLAY_GPU=1` | force host hardware GL, skip the probe |
-  | `DIVEPLAY_GPU=0` | force the bundled software stack, skip the probe |
+  | `DIVEPLAY_GPU=auto` | default — probe, verify, cache |
+  | `DIVEPLAY_GPU=1` | force host hardware GL; no probe, no supervision |
+  | `DIVEPLAY_GPU=0` | force the bundled software stack |
+  | `DIVEPLAY_GL_START=<tier>` | start the supervised ladder at `gpu`/`gpu-nodmabuf`/`software` (testing) |
+  | `DIVEPLAY_GL_NOWATCH=1` | never supervise |
+  | `DIVEPLAY_GL_GRACE=<s>` | seconds a tier must survive to count as working (default 20) |
   | `DIVEPLAY_GPU_DEBUG=1` | print the decision and probe detail to stderr |
-  | `DIVEPLAY_GPU_NOCACHE=1` | ignore the cached verdict and re-probe |
+  | `DIVEPLAY_GPU_NOCACHE=1` | ignore the cached tier and re-probe |
 
   `DIVEPLAY_FORCE_GPU=1` is still honoured as an alias for `DIVEPLAY_GPU=1`.
 
