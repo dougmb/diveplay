@@ -61,7 +61,7 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
         if (countdown === 0) onResume();
     }, [countdown, onResume]);
 
-    // Atalhos de teclado: Enter = resume, Escape = dismiss
+    // Keyboard shortcuts: Enter = resume, Escape = dismiss
     useEffect(() => {
         const handleKey = (e: KeyboardEvent) => {
             if (e.key === 'Enter') onResume();
@@ -72,7 +72,7 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
     }, [onResume, onDismiss]);
 
     return (
-        // Overlay com backdrop blur
+        // Overlay with backdrop blur
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
 
             {/* Card */}
@@ -91,7 +91,7 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
                 {/* File info */}
                 <div className="px-6 py-5 flex items-start gap-4">
 
-                    {/* Ícone do tipo de arquivo */}
+                    {/* File type icon */}
                     <div className="flex-shrink-0 w-11 h-11 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center justify-center">
                         {fileIsVideo ? (
                             <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -105,12 +105,12 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
                     </div>
 
                     <div className="flex flex-col gap-0.5 min-w-0">
-                        {/* Nome do arquivo */}
+                        {/* File name */}
                         <span className="text-sm font-semibold text-white truncate" title={fileName}>
                             {fileName}
                         </span>
 
-                        {/* Pasta */}
+                        {/* Folder */}
                         {folderPath && (
                             <span className="text-xs text-zinc-500 truncate" title={folderPath}>
                                 <span className="inline-flex items-center gap-1">
@@ -122,7 +122,7 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
                             </span>
                         )}
 
-                        {/* Posição */}
+                        {/* Position */}
                         <span className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded-full px-2.5 py-0.5 w-fit">
                             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -132,20 +132,20 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
                     </div>
                 </div>
 
-                {/* Botões */}
+                {/* Buttons */}
                 <div className="px-6 pb-6 flex flex-col gap-3">
 
-                    {/* Botão Resume com fill progressivo */}
+                    {/* Resume button with progressive fill */}
                     <button
                         onClick={onResume}
                         className="relative w-full overflow-hidden rounded-xl border border-blue-500/60 bg-transparent px-5 py-3 font-semibold text-white transition-colors hover:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-zinc-900"
                     >
-                        {/* Fill que cresce da esquerda para direita */}
+                        {/* Fill growing from left to right */}
                         <span
                             className="absolute inset-0 bg-blue-600 transition-[width] duration-1000 ease-linear"
                             style={{ width: `${fillPercent}%` }}
                         />
-                        {/* Texto sobre o fill */}
+                        {/* Text on top of the fill */}
                         <span className="relative z-10 flex items-center justify-center gap-2 text-sm">
                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                                 <path d="M8 5v14l11-7z" />
@@ -155,14 +155,14 @@ export default function ResumeDialog({ state, onResume, onDismiss, onSelectNewFo
                         </span>
                     </button>
 
-                    {/* Linha divisória com label */}
+                    {/* Divider with label */}
                     <div className="flex items-center gap-3">
                         <div className="flex-1 h-px bg-zinc-800" />
                         <span className="text-xs text-zinc-600">or</span>
                         <div className="flex-1 h-px bg-zinc-800" />
                     </div>
 
-                    {/* Botões secundários lado a lado */}
+                    {/* Secondary buttons, side by side */}
                     <div className="flex gap-3">
                         <button
                             onClick={onDismiss}

@@ -1606,7 +1606,7 @@ export default function Player() {
                                     {/* Track selector */}
                                     {subtitleTracks.length > 0 && (
                                         <div className="space-y-1">
-                                            <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">FAIXA</span>
+                                            <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">TRACK</span>
                                             <div className="space-y-0.5">
                                                 {subtitleTracks.map((track, idx) => (
                                                     <button
@@ -1655,7 +1655,7 @@ export default function Player() {
 
                                     {/* Text Color */}
                                     <div className="space-y-1.5">
-                                        <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">COR DO TEXTO</span>
+                                        <span className="text-[10px] text-zinc-500 font-medium uppercase tracking-wider">TEXT COLOR</span>
                                         <div className="flex items-center gap-2">
                                             {['#ffffff', '#ffff00', '#00ffff', '#90ee90'].map(color => (
                                                 <button
@@ -1679,7 +1679,7 @@ export default function Player() {
                                     {/* Background opacity */}
                                     <div className="space-y-1.5">
                                         <div className="flex justify-between text-[10px] text-zinc-500 font-medium">
-                                            <span>FUNDO</span>
+                                            <span>BACKGROUND</span>
                                             <span className="text-zinc-400">{Math.round(settings.subtitles.bgOpacity * 100)}%</span>
                                         </div>
                                         <input
@@ -1710,7 +1710,7 @@ export default function Player() {
                                             <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                                                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
                                             </svg>
-                                            Carregar legenda…
+                                            Load subtitle file…
                                         </button>
                                     </div>
                                 </div>

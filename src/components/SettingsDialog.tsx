@@ -111,9 +111,9 @@ export default function SettingsDialog({ prefs, appSettings, onSave, onClose }: 
                     <div>
                         <h3 className="text-sm font-medium text-zinc-300 mb-1">Auto Subtitles (OpenSubtitles)</h3>
                         <p className="text-xs text-zinc-500 mb-3">
-                            Busca legendas automaticamente ao abrir um arquivo.{' '}
+                            Automatically searches for subtitles when a file is opened.{' '}
                             <a href="https://www.opensubtitles.com/consumers" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">
-                                Criar API key gratuita
+                                Get a free API key
                             </a>
                         </p>
                         <div className="space-y-2">
@@ -121,14 +121,14 @@ export default function SettingsDialog({ prefs, appSettings, onSave, onClose }: 
                                 <label className="text-xs text-zinc-400 block mb-1">API Key</label>
                                 <input
                                     type="password"
-                                    placeholder="Sua API key do OpenSubtitles"
+                                    placeholder="Your OpenSubtitles API key"
                                     value={apiKey}
                                     onChange={e => setApiKey(e.target.value)}
                                     className="w-full px-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-md text-xs text-zinc-200 placeholder:text-zinc-600 outline-none focus:border-indigo-500/50"
                                 />
                             </div>
                             <div>
-                                <label className="text-xs text-zinc-400 block mb-1">Idioma preferido</label>
+                                <label className="text-xs text-zinc-400 block mb-1">Preferred language</label>
                                 <input
                                     type="text"
                                     placeholder="pt, en, es, fr..."
