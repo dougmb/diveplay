@@ -1,7 +1,7 @@
 {
   "name": "diveplay",
   "private": true,
-  "version": "1.0.20",
+  "version": "1.0.21",
   "description": "A portable, browser-based media player that travels with your files",
   "type": "module",
   "scripts": {
